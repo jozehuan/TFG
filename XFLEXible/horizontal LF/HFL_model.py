@@ -1,16 +1,102 @@
 import numpy as np
 
-from collections import Counter
+from collections import Counter, OrderedDict
 
 import matplotlib.pyplot as plt
+
+import time
 
 import torch
 import torch.nn as nn
 from torchvision import transforms, datasets
+from torch.utils.data import DataLoader
 
 import flex
-from flex.pool import init_server_model, FlexPool
+
 from flex.model import FlexModel
+
+from flex.data import Dataset
+
+from flex.pool import init_server_model, FlexPool
+from flex.pool import deploy_server_model_pt
+from flex.pool import collect_clients_weights_pt, fed_avg
+from flex.pool import set_aggregated_weights_pt
+
+device = 'cpu'
+
+
+def train(client_flex_model: FlexModel, client_data: Dataset):
+    """Función de entramiento del modelo:
+            client_flex_model - modelo definido
+            client_data - datos del cliente a usar
+    """
+    
+    train_dataset = client_data.to_torchvision_dataset()
+    cl_dataloader = DataLoader(train_dataset, batch_size=20)
+    
+    model = client_flex_model["model"]
+    optimizer = client_flex_model["optimizer_func"](
+        model.parameters(), **client_flex_model["optimizer_kwargs"]
+    )
+    
+    # Pasar al modelo los pesos agregados en el servidor
+    agg_weights = client_flex_model.get("aggregated_weights")
+    if agg_weights is not None:
+        model_keys = list(model.state_dict().keys())
+        agg_weights_order = OrderedDict()
+        for i, tensor in enumerate(agg_weights):
+            agg_weights_order[model_keys[i]] = tensor
+        model.load_state_dict(agg_weights_order)
+    
+    model = model.train()
+    model = model.to(device)
+    criterion = client_flex_model["criterion"]
+    
+    for _ in range(5):
+        for imgs, labels in cl_dataloader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            
+            pred = model(imgs)
+            loss = criterion(pred, labels)
+            loss.backward()
+            optimizer.step()
+
+
+def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
+    """Función de evaluación del modelo entrenado:
+            server_flex_model - modelo definido
+            test_data - datos a usar
+    """
+    model = server_flex_model["model"]
+    model.eval()
+    test_loss = 0
+    test_acc = 0
+    total_count = 0
+    model = model.to(device)
+    criterion = server_flex_model["criterion"]
+    
+    # get test data as a torchvision object
+    test_dataset = test_data.to_torchvision_dataset()
+    test_dataloader = DataLoader(test_dataset, batch_size=20, 
+                                 shuffle=True, pin_memory=False)
+    
+    losses = []
+    with torch.no_grad():
+        for data, target in test_dataloader:
+            total_count += target.size(0)
+            data, target = data.to(device), target.to(device)
+            
+            output = model(data)
+            losses.append(criterion(output, target).item())
+            pred = output.data.max(1, keepdim=True)[1]
+            test_acc += pred.eq(target.data.view_as(pred)).long().cpu().sum().item()
+
+    test_loss = sum(losses) / len(losses)
+    test_acc /= total_count
+    return test_loss, test_acc
+
+
 
 
 transform_dflt = transforms.Compose([
@@ -28,7 +114,7 @@ class Net(nn.Module):
     def __init__(self, num_classes=10):
         super().__init__()
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(3 * 28 * 28, 128)
+        self.fc1 = nn.Linear(28 * 28, 128)
         self.fc2 = nn.Linear(128, num_classes)
 
     def forward(self, x):
@@ -242,6 +328,50 @@ class HFL_model:
         
         self._flex_pool = FlexPool.client_server_pool(
              fed_dataset=self._fed_dataset, server_id=server_id, init_func=build)
+        
+    def train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = 2):
+        
+        """
+        Función principal para el entrenamiento del modelo.
+        
+        Parameters
+        ----------
+        n_rounds : int = 10 
+            Número de rondas
+        clients_per_round : int = 2
+            Número de clientes por ronda
+        """
+        
+        z_clients = self._flex_pool.clients
+        z_servers = self._flex_pool.servers
+    
+        print(
+            f"\nNumber of nodes in the pool {len(self._flex_pool)} ({len(z_servers)} server plus {len(z_clients)} clients) \nServer ID: {list(z_servers._actors.keys())}. The server is also an aggregator.\n"
+        )
+        
+        
+        for i in range(n_rounds):
+            print(f"\nRunning round: {i+1} of {n_rounds}")
+            selected_clients_pool = self._flex_pool.clients.select(clients_per_round)
+            selected_clients = selected_clients_pool.clients
+            print(f"Selected clients for this round: {list(selected_clients._actors.keys())}")
+            # Deploy the server model to the selected clients
+            self._flex_pool.servers.map(deploy_server_model_pt, selected_clients)
+            # Each selected client trains her model
+            selected_clients.map(train)
+            # The aggregador collects weights from the selected clients and aggregates them
+            self._flex_pool.aggregators.map(collect_clients_weights_pt, selected_clients)
+            self._flex_pool.aggregators.map(fed_avg)
+            
+            # Llegar a algun elemento del modelo general
+            # w_cl2 = self._flex_pool.aggregators._models[0]['aggregated_weights']
+            
+            # The aggregator send its aggregated weights to the server
+            self._flex_pool.aggregators.map(set_aggregated_weights_pt, self._flex_pool.servers)
+            metrics = self._flex_pool.servers.map(evaluate_global_model)
+            loss, acc = metrics[0]
+            print(f"Server: Test acc: {acc:.4f}, test loss: {loss:.4f}")
+    
 
 #----------------------------------------------------------------------------------------------
         
@@ -250,7 +380,19 @@ modelHFL = HFL_model(dataset_root='mnist', download=True, transform=transform_df
                      balance_nodes=False, nodes_weights=None, balance_factor=0.25,
                      balance_classes=True, alpha_inf=0.4, alpha_sup=0.6)
 
-modelHFL.class_counter(plot = True)
+#modelHFL.class_counter(plot = True)
 modelHFL.set_model(build = build_server_model)
 
-print(modelHFL._flex_pool._actors)
+#print(modelHFL._flex_pool._actors)
+
+start_time = time.time()
+
+modelHFL.train_n_rounds(n_rounds = 10, clients_per_round = 5)
+
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"Tiempo transcurrido: {elapsed_time:.2f} segundos")
+
+
+
+    
