@@ -154,13 +154,11 @@ def get_explanations(func):
     )
 
     @functools.wraps(func)
-    def _get_explanations_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
+    def _get_explanations_(node_flex_model: FlexModel, *args, **kwargs):
         if "explanations" not in node_flex_model:
             node_flex_model["explanations"] = []
         
-        explanations = func(node_flex_model, node_data, *args, **kwargs)
+        explanations = func(node_flex_model, *args, **kwargs)
         node_flex_model["explanations"] = explanations
-
-            
 
     return _get_explanations_

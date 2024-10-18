@@ -13,7 +13,19 @@ from skimage.color import gray2rgb, rgb2gray
 
 @set_explainer
 def set_LimeImageExplainer(*args, **kwargs):
-    
+    '''Define the LimeImageExplainer in the nodes, using the decorator @set_explainer
+
+     Args:
+    -----
+        flex_model (FlexModel): object storing information needed to run a Pytorch model
+
+        kernel_width (float): kernel width for the exponential kernel
+        kernel (Callable): similarity kernel that takes euclidean distances and kernel width as input and outputs weights in (0,1). If None, defaults to an exponential kernel
+        feature_selection (str): feature selection method. can be 'forward_selection', 'lasso_path', 'none' or 'auto'
+        random_state (int): value used to generate random numbers. If None, the random state will be initialized using the internal numpy seed.
+
+    '''
+
     k_w = kwargs.get("kernel_width", 0.25)
     k = kwargs.get("kernel", None)
     f_s = kwargs.get("feature_selection", 'auto')
@@ -27,9 +39,12 @@ def set_LimeImageExplainer(*args, **kwargs):
 
 
 def predict_(color_img, model):
-    """Predictor:
-            color_img - imagen en formato '(28, 28, 3)'
-            (el predictor se encarga de dar formato correcto a la imagen antes de predecir) 
+    """Convert the image to grayscale and get the model's prediction
+
+    Args:
+    -----
+        color_img (Array):  RGB image (the predictor is responsible for correctly formatting the image before making a prediction)
+        model (nn.Module): cassification model
     """
     
     img_g = rgb2gray(color_img)
@@ -44,19 +59,32 @@ def predict_(color_img, model):
 
     return preds
 
+from torch.utils.data import Subset
 
 @get_explanations
-def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
+def get_LimeExplanations(flex_model, *args, **kwargs):
+    '''Generate explanations for the specified data, according to the explainers defined by the specified model, using the decorator @get_explanations
+
+     Args:
+    -----
+        flex_model (FlexModel): object storing information needed to run a Pytorch model
+        data (flex.data.Dataset): objet storing the specified data to be explained
+
+    Note:
+    -----
+        The argument data should be provided through *args or **kwargs when calling the function.
+    '''
 
     exp_output = []
     images = []
 
+    node_data = kwargs.get("data", None) # -- Añadir error de si no se introducen datos, que no se pueda realizar o que use los suyos
     dataset = node_data.to_torchvision_dataset()
-    dataloader = DataLoader(dataset, batch_size=1024)
+    dataset = Subset(dataset, list(range(20)))
+    dataloader = DataLoader(dataset, batch_size=20)
 
     for imgs, _ in dataloader:
         imgs = imgs.to('cpu')
-    
         images.extend(imgs.tolist())
 
     classifier = partial(predict_, model = flex_model["model"])
@@ -69,7 +97,7 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
                                                top_labels=10, hide_color=0, 
                                                num_samples=10000, segmentation_fn=segmenter)
             
-            explanations.append(explanation)
+            explanations.append([data, explanation])
 
         exp_output.append(explanations)
 
