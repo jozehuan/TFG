@@ -139,12 +139,23 @@ def set_explainer(func):
     @functools.wraps(func)
     def _set_explainer_(node_flex_model: FlexModel, *args, **kwargs):
         if "explainers" not in node_flex_model:
-            node_flex_model["explainers"] = []
-        
-        exp = func(*args, **kwargs)
-        node_flex_model["explainers"].append(exp)
+            node_flex_model["explainers"] = {}
 
-    
+        name = kwargs.get("name", 'exp') # get the explainer's name
+
+        # gnerate a new name if the name is already taken
+        if name in node_flex_model["explainers"]:
+            base_name = name
+            i = 1
+            while f"{base_name}_{i}" in node_flex_model["explainers"]:
+                i += 1
+            name = f"{base_name}_{i}"  
+
+            # añadir warning de cambio de nombre??
+
+        exp = func(*args, **kwargs)
+        node_flex_model["explainers"][name] = exp
+
     return _set_explainer_
 
 def get_explanations(func):
@@ -156,7 +167,7 @@ def get_explanations(func):
     @functools.wraps(func)
     def _get_explanations_(node_flex_model: FlexModel, *args, **kwargs):
         if "explanations" not in node_flex_model:
-            node_flex_model["explanations"] = []
+            node_flex_model["explanations"] = {}
         
         explanations = func(node_flex_model, *args, **kwargs)
         node_flex_model["explanations"] = explanations

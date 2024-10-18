@@ -59,8 +59,6 @@ def predict_(color_img, model):
 
     return preds
 
-from torch.utils.data import Subset
-
 @get_explanations
 def get_LimeExplanations(flex_model, *args, **kwargs):
     '''Generate explanations for the specified data, according to the explainers defined by the specified model, using the decorator @get_explanations
@@ -72,15 +70,14 @@ def get_LimeExplanations(flex_model, *args, **kwargs):
 
     Note:
     -----
-        The argument data should be provided through *args or **kwargs when calling the function.
+        The argument 'data' should be provided through *args or **kwargs when calling the function.
     '''
 
-    exp_output = []
+    exp_output = {}
     images = []
 
     node_data = kwargs.get("data", None) # -- Añadir error de si no se introducen datos, que no se pueda realizar o que use los suyos
     dataset = node_data.to_torchvision_dataset()
-    dataset = Subset(dataset, list(range(20)))
     dataloader = DataLoader(dataset, batch_size=20)
 
     for imgs, _ in dataloader:
@@ -90,7 +87,7 @@ def get_LimeExplanations(flex_model, *args, **kwargs):
     classifier = partial(predict_, model = flex_model["model"])
     segmenter = SegmentationAlgorithm('slic', n_segments=50, compactness=10, sigma=0.25)
 
-    for i, exp in enumerate(flex_model["explainers"]):
+    for exp_name, exp in flex_model["explainers"].items():
         explanations = []
         for data in images:
             explanation = exp.explain_instance(gray2rgb(data), classifier_fn = classifier,
@@ -99,6 +96,6 @@ def get_LimeExplanations(flex_model, *args, **kwargs):
             
             explanations.append([data, explanation])
 
-        exp_output.append(explanations)
+        exp_output[exp_name] = explanations
 
     return exp_output
