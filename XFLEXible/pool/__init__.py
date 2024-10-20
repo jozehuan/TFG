@@ -49,9 +49,11 @@ from flex.pool.decorators import evaluate_server_model
 # XFLEXible addition
 from flex.pool.decorators import set_explainer
 from flex.pool.decorators import get_explanations
+from flex.pool.decorators import get_SP_explanation
 
 from flex.pool.lime_explainer import set_LimeImageExplainer
 from flex.pool.lime_explainer import predict_
 from flex.pool.lime_explainer import get_LimeExplanations
+from flex.pool.lime_explainer import get_SP_LimeImageExplanation
 
 from flex.pool.xai import Image_SubmodularPick

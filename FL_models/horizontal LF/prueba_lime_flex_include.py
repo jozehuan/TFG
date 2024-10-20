@@ -24,6 +24,7 @@ from flex.pool import set_aggregated_weights_pt
 
 from flex.pool import set_LimeImageExplainer
 from flex.pool import get_LimeExplanations
+from flex.pool import get_SP_LimeImageExplanation
 
 
 device = 'cpu'
@@ -106,28 +107,54 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
 transform_dflt = transforms.Compose([
     transforms.ToTensor(),  # Convierte las imágenes a tensores
     #transforms.Normalize((0.5,), (0.5,)), # Normaliza con la media y desviación estándar
-    transforms.Lambda(lambda x: x.numpy().squeeze())
+    #transforms.Lambda(lambda x: x.numpy().squeeze())
 ])
 
+# class Net(nn.Module):
+    
+#     """
+#     Red neuronal básica
+#     """
+    
+#     def __init__(self, num_classes=10):
+#         super().__init__()
+#         self.flatten = nn.Flatten()
+#         self.fc1 = nn.Linear(28 * 28, 128)
+#         self.fc2 = nn.Linear(128, num_classes)
+
+#     def forward(self, x):
+#         x = self.flatten(x)
+#         x = self.fc1(x)
+#         x = nn.functional.relu(x)
+#         x = self.fc2(x)
+#         return nn.functional.log_softmax(x, dim=1)
+
 class Net(nn.Module):
-    
-    """
-    Red neuronal básica
-    """
-    
-    def __init__(self, num_classes=10):
+    def __init__(self):
         super().__init__()
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(28 * 28, 128)
-        self.fc2 = nn.Linear(128, num_classes)
+
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(1, 10, kernel_size=5),
+            nn.MaxPool2d(2),
+            nn.ReLU(),
+            nn.Conv2d(10, 20, kernel_size=5),
+            nn.Dropout(),
+            nn.MaxPool2d(2),
+            nn.ReLU(),
+        )
+        self.fc_layers = nn.Sequential(
+            nn.Linear(320, 50),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(50, 10),
+            nn.Softmax(dim=1),
+        )
 
     def forward(self, x):
-        x = self.flatten(x)
-        x = self.fc1(x)
-        x = nn.functional.relu(x)
-        x = self.fc2(x)
-        return nn.functional.log_softmax(x, dim=1)
-
+        x = self.conv_layers(x)
+        x = x.view(-1, 320)
+        x = self.fc_layers(x)
+        return x
 
 @init_server_model
 def build_server_model():
@@ -387,13 +414,14 @@ class HFL_model:
             
     
     def set_explainers(self, name, *args, **kwargs):
-        self._flex_pool.clients.map(set_LimeImageExplainer, name=name)
+        self._flex_pool.clients.map(set_LimeImageExplainer, name=name, **kwargs)
         
     def get_explanations(self, data):
         selected_clients = self._flex_pool.clients.select(1).clients 
         
         selected_clients.map(get_LimeExplanations, data=data)
-    
+        
+        selected_clients.map(get_SP_LimeImageExplanation)
 
 #----------------------------------------------------------------------------------------------
         
@@ -409,15 +437,18 @@ modelHFL.set_model(build = build_server_model)
 
 start_time = time.time()
 
-modelHFL.train_n_rounds(n_rounds = 10, clients_per_round = 5)
+modelHFL.train_n_rounds(n_rounds = 5, clients_per_round = 5)
 
 end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"\n\nTime: {elapsed_time:.2f} segundos")
 
-modelHFL.set_explainers(name='lime_exp')
+modelHFL.set_explainers(name='lime_slic', algo_type='slic', segment_params={'n_segments' : 50, 'compactness' : 10, 'sigma' : 0.25})
+#modelHFL.set_explainers(name='lime_quick', algo_type='felzenszwalb', num_samples=10000)
 
 data = modelHFL._flex_pool.servers._data.data[0]
 data = data[0:20]
+
+data_l, _ = data.to_list()
 
 modelHFL.get_explanations(data)

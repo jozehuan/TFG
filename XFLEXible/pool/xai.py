@@ -23,7 +23,6 @@ class Image_SubmodularPick(object):
                  method='sample',
                  sample_size=1000,
                  num_exps_desired=10,
-                 num_features=10,
                  **kwargs):
 
         """
@@ -44,7 +43,6 @@ class Image_SubmodularPick(object):
                     entire data. l
             sample_size: The number of instances to explain if method == 'sample'
             num_exps_desired: The number of explanation objects returned
-            num_features: maximum number of features present in explanation
 
 
         Sets value:
@@ -67,15 +65,14 @@ class Image_SubmodularPick(object):
             raise ValueError('Method must be \'sample\' or \'full\'')
 
         # Generate Explanations
-        n_pixels = len(data[0]) * len(data[0][0])
+        n_pixels = data[0].size(1) * data[0].size(2)
         segmenter = SegmentationAlgorithm('slic', n_segments=n_pixels)
         
         self.explanations = []
         for i in sample_indices:
             img_rgb = gray2rgb(data[i])
             self.explanations.append(
-                explainer.explain_instance(img_rgb, classifier_fn = predict_fn, 
-                                           top_labels=10, hide_color=0, num_samples=10000, segmentation_fn=segmenter) )
+                explainer.explain_instance(img_rgb, classifier_fn = predict_fn, segmentation_fn=segmenter, **kwargs) )
                 
         # Error handling
         try:

@@ -158,6 +158,7 @@ def set_explainer(func):
 
     return _set_explainer_
 
+
 def get_explanations(func):
     min_args = 1
     assert check_min_arguments(func, min_args), ERROR_MSG_MIN_ARG_GENERATOR(
@@ -173,3 +174,16 @@ def get_explanations(func):
         node_flex_model["explanations"] = explanations
 
     return _get_explanations_
+
+
+def get_SP_explanation(func):
+    min_args = 1
+    assert check_min_arguments(func, min_args), ERROR_MSG_MIN_ARG_GENERATOR(
+        func, min_args
+    )
+
+    @functools.wraps(func)
+    def _get_SP_explanation_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
+        node_flex_model["SP_explanation"] = func(node_flex_model, node_data, *args, **kwargs)
+
+    return _get_SP_explanation_
