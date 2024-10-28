@@ -9,6 +9,8 @@ from lime.wrappers.scikit_image import SegmentationAlgorithm
 
 from tqdm import tqdm # barra de progreso
 
+from flex.pool.explanation import Explanation
+
 import torch
 from torch.utils.data import DataLoader
 
@@ -122,10 +124,12 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
     classifier = partial(predict_, model = flex_model['model'])
     
     for exp_name, exp in flex_model['explainers'].items():
-        if exp['explainer'].__class__.__name__ == 'LimeImageExplainer':
+        cl_name = exp['explainer'].__class__.__name__
+        if cl_name == 'LimeImageExplainer':
             explanations = []
             for data in tqdm(images, desc="Getting LIME explanations: ", mininterval=2):
-                explanation = exp['explainer'].explain_instance(gray2rgb(data), classifier_fn = classifier, **exp['explain_instance_kwargs'])
+                #explanation = exp['explainer'].explain_instance(gray2rgb(data), classifier_fn = classifier, **exp['explain_instance_kwargs'])
+                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], data_to_explain = torch.tensor(data).unsqueeze(0),  **exp['explain_instance_kwargs'])
                 explanations.append(explanation)
             exp_output[exp_name] = explanations
 

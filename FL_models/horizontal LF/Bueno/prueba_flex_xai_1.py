@@ -28,7 +28,9 @@ from flex.pool import set_aggregated_weights_pt
 from flex.pool import set_LimeImageExplainer
 from flex.pool import get_LimeExplanations, get_SP_LimeImageExplanation
 
-from flex.pool import set_DeepShapExplainer, get_DeepShapExplanations
+from flex.pool import set_DeepShapExplainer
+from flex.pool import set_GradientShapExplainer
+from flex.pool import get_ShapExplanations
 
 from flex.pool import plot_heatmap
 
@@ -165,6 +167,9 @@ class HFL_model:
         """
         # -- NOTA: VER COMO GENERALIZAR DISTRIBUCIONES ALEATORIAS --
         #       NO USAR SÓLO LA UNIFORME
+        
+        np.random.seed(config_seed)
+        torch.manual_seed(config_seed)
         
         # Carga del dataset y transformación a objeto 'flex.data.Dataset'
         dt_train = datasets.MNIST(root=dataset_root, train=True, download=download, transform=transform)
@@ -369,14 +374,14 @@ class HFL_model:
     
     def set_explainers(self, name, *args, **kwargs):
         self._flex_pool.clients.map(set_LimeImageExplainer, name='lime_slic', **kwargs)
-        self._flex_pool.clients.map(set_DeepShapExplainer, name='deepshap', **kwargs)
+        self._flex_pool.clients.map(set_DeepShapExplainer, name='deepshap')
+        self._flex_pool.clients.map(set_GradientShapExplainer, name='gradshap', n_samples=1000, stdevs=0.5)
         
     def get_explanations(self, data = None):
         selected_clients = self._flex_pool.clients.select(1).clients 
         
-        #selected_clients.map(get_LimeExplanations, data=data)
-        
-        selected_clients.map(get_DeepShapExplanations, data=data)
+        selected_clients.map(get_LimeExplanations, data=data)
+        selected_clients.map(get_ShapExplanations, data=data)
         selected_clients.map(plot_heatmap)
     
         #selected_clients.map(get_SP_LimeImageExplanation)
@@ -389,7 +394,7 @@ modelHFL = HFL_model(dataset_root='mnist', download=True, transform=transform_df
                      balance_classes=True, alpha_inf=0.4, alpha_sup=0.6)
 
 # Copia profunda del modelo
-modelHFL2 = copy.deepcopy(modelHFL)
+#modelHFL2 = copy.deepcopy(modelHFL)
 
 modelHFL.class_counter(ncols = 4, plot = True)
 modelHFL.set_model(build = nets.build_server_CNN_model)
@@ -404,34 +409,32 @@ end_time = time.time()
 elapsed_time = end_time - start_time
 print(f"\n\nTime: {elapsed_time:.2f} segundos")
 
-modelHFL.set_explainers(name='lime_slic', top_labels = 10, num_samples=10000, algo_type='slic', segment_params={'n_segments' : 50, 'compactness' : 10, 'sigma' : 0.25})
+modelHFL.set_explainers(name='lime_slic', top_labels = 10, num_samples=10000, algo_type='slic', segment_params={'n_segments' : 200, 'compactness' : 0.05, 'sigma' : 0.4})
 #modelHFL.set_explainers(name='lime_quick', algo_type='felzenszwalb', num_samples=10000)
 
 data = modelHFL._flex_pool.servers._data.data[0]
-data = data[0:5]
-
-data_l, _ = data.to_list()
+data = data[0:3]
 
 modelHFL.get_explanations(data) # Explicar datos dados en la entrada
 #modelHFL.get_explanations() # Explicar todos los datos de los clientes
 
 # ---
-# modelHFL2.set_model(build = nets.build_server_Net_model)
 
-# start_time = time.time()
+modelHFL2 = HFL_model(dataset_root='mnist', download=True, transform=transform_dflt,
+                     config_seed=42, replacement=False, nodes=20, n_classes=10,
+                     balance_nodes=False, nodes_weights=None, balance_factor=0.25,
+                     balance_classes=True, alpha_inf=0.4, alpha_sup=0.6)
 
-# modelHFL2.train_n_rounds(n_rounds = 5, clients_per_round = 5)
+modelHFL2.set_model(build = nets.build_server_Net_model)
 
-# end_time = time.time()
-# elapsed_time = end_time - start_time
-# print(f"\n\nTime: {elapsed_time:.2f} segundos")
+start_time = time.time()
 
-# modelHFL2.set_explainers(name='lime_slic', top_labels = 10, num_samples=1000, algo_type='slic', segment_params={'n_segments' : 50, 'compactness' : 10, 'sigma' : 0.25})
-# #modelHFL.set_explainers(name='lime_quick', algo_type='felzenszwalb', num_samples=10000)
+modelHFL2.train_n_rounds(n_rounds = 5, clients_per_round = 5)
 
-# data = modelHFL2._flex_pool.servers._data.data[0]
-# data = data[0:20]
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"\n\nTime: {elapsed_time:.2f} segundos")
 
-# data_l, _ = data.to_list()
+modelHFL2.set_explainers(name='lime_slic', top_labels = 10, num_samples=10000, algo_type='slic', segment_params={'n_segments' : 200, 'compactness' : 0.05, 'sigma' : 0.4})
 
-# modelHFL2.get_explanations(data)
+modelHFL2.get_explanations(data)

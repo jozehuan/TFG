@@ -50,53 +50,86 @@ class Explanation:
         self.model.eval()
         pred = self.model(data_to_explain)
         self.probs = pred[0].tolist()
-        self.prediction = torch.argmax(pred, dim=1)
+        self.prediction = torch.argmax(pred, dim=1).item()
         
     def get_explanation(self, label):
         class_name = self.explainer.__class__.__name__
         
         if class_name == 'LimeImageExplainer':
-            classifier = partial(predict_, model = self.model)
-            
-            explanation = self.explainer.explain_instance(gray2rgb(self.data.squeeze().numpy()), 
+            classifier = partial(predict_, model = self.model)            
+            explanation = self.explainer.explain_instance(gray2rgb(self.data.squeeze(0).squeeze(0).cpu().detach().numpy()), 
                                             classifier_fn = classifier, 
                                             **self.explain_kwargs)
             
             segments = explanation.segments
-            explanation_label = np.vectorize(dict(explanation.local_exp[label]).get)(segments) 
-            return explanation_label
+            explanation_j = np.vectorize(dict(explanation.local_exp[label]).get)(segments) 
+            return np.nan_to_num(explanation_j, nan=0)
         
-        if class_name == 'DeepLiftShap':
+        if class_name in ('DeepLiftShap', 'GradientShap'):
             explanation_j = self.explainer.attribute(self.data, target=label, **self.explain_kwargs)
             return explanation_j.squeeze().detach().numpy()
 
+def adjust_values_iqr(image):
+    # Calcular los cuartiles
+    P5 = np.percentile(image, 5)
+    P95 = np.percentile(image, 95)
+    
+    # Calcular el IQR
+    IQR = P95 - P5
+    
+    # Definir los límites
+    lower_bound = P5 - 1.5 * IQR
+    upper_bound = P95 + 1.5 * IQR
+    
+    # Ajustar los valores fuera de los límites
+    image_clipped = np.where(image < lower_bound, lower_bound, image)
+    image_clipped = np.where(image > upper_bound, upper_bound, image)
+    
+    return image_clipped
 
 @plot_explanations
 def plot_heatmap(flex_model, node_data, *args, **kwargs):
 
-    for _, exps in flex_model["explanations"].items():
+    for exp_name, exps in flex_model["explanations"].items():
         for e in exps:
-            fig_size = np.array([11 * 0.11 * (10 + 1), 6])
-            fig, ax =plt.subplots(nrows=1, ncols=(10 + 1), figsize=fig_size, squeeze=False)
-    
-            max_vals = [np.max(np.abs(e.get_explanation(label=k))) for k in range(10)]
-            max_val = np.max(max_vals)
+            num_labels = len(e.probs)
 
-            axes = ax.ravel()
-            
-            axes[0].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"))
-            axes[0].axis("off")
-            axes[0].set_title(f'pred: {e.prediction}')
+            fig_size = np.array([(num_labels + 1) * 0.13 * (num_labels + 1), 6])
+            fig, ax =plt.subplots(nrows=2, ncols=(num_labels + 1), figsize=fig_size, squeeze=False)
+            #fig.suptitle(f'{exp_name}')
 
-            for j in range(10):
-                axes[j+1].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15, extent=(-1, e.get_explanation(label=j).shape[1], e.get_explanation(label=j).shape[0], -1))
-                im = axes[j+1].imshow(e.get_explanation(label=j), cmap=red_transparent_blue, vmin=-max_vals[j], vmax=max_vals[j]) #, vmin=-max_val, vmax=max_val)
-                fig.colorbar(im, ax=axes[j+1], orientation="horizontal")
-                axes[j+1].axis("off")
-                axes[j+1].set_title(f'{j} ({e.probs[j]*100:.2f}%)')
+            max_vals = [np.max(np.abs(e.get_explanation(label=k))) for k in range(num_labels)]
+            max_val = max(max_vals)
             
+            ax[0,0].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"))
+            ax[0,0].axis("off");  ax[1, 0].axis("off")
+            ax[0,0].set_title(f'pred: {e.prediction}')
+
+            for j in range(num_labels):
+                explanation_j = adjust_values_iqr(e.get_explanation(label=j))
+                max_value = np.max(np.abs(explanation_j))
+
+
+                ax[0,j+1].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15, extent=(-1, explanation_j.shape[1], explanation_j.shape[0], -1))
+                im = ax[0, j+1].imshow(explanation_j, cmap=red_transparent_blue, vmin=-max_val, vmax=max_val)
+                ax[0, j+1].set_title(f'{j}\n({e.probs[j]*100:.2f}%)')
+                ax[0, j+1].axis("off")
+
+                ax[1,j+1].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15, extent=(-1, explanation_j.shape[1], explanation_j.shape[0], -1))
+                im = ax[1,j+1].imshow(explanation_j, cmap=red_transparent_blue, vmin=-max_value, vmax=max_value)
+                
+                print(f'valor maximo para {j}: {max_vals[j]} \npercentiles: {np.percentile(e.get_explanation(label=j), [1,5,95,99])}')
+                print(f'valor maximo para chiped{j}: {max_value} \npercentiles: {np.percentile(explanation_j, [1,5,95,99])}\n')
+
+                fig.colorbar(im, ax=ax[1,j+1], orientation="horizontal")
+                ax[1,j+1].axis("off")
+            
+            cbar_ax = fig.add_axes([0.125, 0.54, 0.775, 0.02])  # Ajusta la posición [left, bottom, width, height]
+            cb = fig.colorbar(im, cax=cbar_ax, orientation="horizontal")
+            cb.outline.set_visible(False)
+
             fig.tight_layout()
-            #fig.subplots_adjust(hspace=0.5)
+            fig.subplots_adjust(hspace=0.5)
             #cb = fig.colorbar(
             #    im, ax=np.ravel(axes).tolist(), label="SHAP value", orientation="horizontal", aspect=fig_size[0] / 0.2)
             #cb.outline.set_visible(False)

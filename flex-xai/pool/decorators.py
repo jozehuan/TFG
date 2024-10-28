@@ -171,7 +171,7 @@ def get_explanations(func):
             node_flex_model["explanations"] = {}
         
         explanations = func(node_flex_model, node_data, *args, **kwargs)
-        node_flex_model["explanations"] = explanations
+        node_flex_model["explanations"].update(explanations)
 
     return _get_explanations_
 
