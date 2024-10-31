@@ -62,6 +62,7 @@ from flex.pool.lime_explainer import get_SP_LimeImageExplanation
 
 from flex.pool.shap_explainer import set_DeepShapExplainer
 from flex.pool.shap_explainer import set_GradientShapExplainer
+from flex.pool.shap_explainer import set_KernelShapExplainer
 from flex.pool.shap_explainer import get_ShapExplanations
 
 from flex.pool.xai import Image_SubmodularPick

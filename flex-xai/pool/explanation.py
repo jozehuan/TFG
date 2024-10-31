@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from functools import partial
 
 import torch
@@ -7,6 +8,8 @@ from flex.pool.decorators import plot_explanations
 from captum.attr import DeepLiftShap, GradientShap
 
 from skimage.color import gray2rgb, rgb2gray
+
+from tqdm import tqdm # progress bar
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -41,17 +44,43 @@ def predict_(color_img, model):
 
 class Explanation:
     
-    def __init__(self, model, exp, data_to_explain, *args, **kwargs):
+    def __init__(self, model, exp, data_to_explain, label, *args, **kwargs):
         self.model = model
         self.explainer = exp
         self.data = data_to_explain
         self.explain_kwargs = kwargs
+        self._label = label
 
         self.model.eval()
         pred = self.model(data_to_explain)
         self.probs = pred[0].tolist()
+        self.num_labels = len(self.probs)
         self.prediction = torch.argmax(pred, dim=1).item()
-        
+
+        self._explanations = [None] * self.num_labels
+    
+    def lime_explanation(self, label):
+        # Evaluar solo cuando sea necesario
+        if self._explanations[label] is None:
+            classifier = partial(predict_, model=self.model)
+            
+            explanation = self.explainer.explain_instance(
+                gray2rgb(self.data.squeeze(0).squeeze(0).cpu().detach().numpy()),
+                classifier_fn=classifier,
+                **self.explain_kwargs
+            )
+            segments = explanation.segments
+            explanation_j = np.vectorize(dict(explanation.local_exp[label]).get)(segments)
+            self._explanations[label] = np.nan_to_num(explanation_j, nan=0)
+        return self._explanations[label]
+    
+    def shap_explanation(self, label):
+        # Evaluar solo cuando sea necesario
+        if self._explanations[label] is None:
+            explanation_j = self.explainer.attribute(self.data, target=label, **self.explain_kwargs)
+            self._explanations[label] = explanation_j.squeeze().detach().numpy()
+        return self._explanations[label]
+    
     def get_explanation(self, label):
         class_name = self.explainer.__class__.__name__
         
@@ -65,73 +94,131 @@ class Explanation:
             explanation_j = np.vectorize(dict(explanation.local_exp[label]).get)(segments) 
             return np.nan_to_num(explanation_j, nan=0)
         
-        if class_name in ('DeepLiftShap', 'GradientShap'):
+        if class_name in ('DeepLiftShap', 'GradientShap', 'KernelShap'):
             explanation_j = self.explainer.attribute(self.data, target=label, **self.explain_kwargs)
             return explanation_j.squeeze().detach().numpy()
+        
+    def get_explanation(self, label):
+        class_name = self.explainer.__class__.__name__
+        
+        if class_name == 'LimeImageExplainer':
+            return self.lime_explanation(label)
+        
+        if class_name in ('DeepLiftShap', 'GradientShap', 'KernelShap'):
+            return self.shap_explanation(label)
 
-def adjust_values_iqr(image):
-    # Calcular los cuartiles
-    P5 = np.percentile(image, 5)
-    P95 = np.percentile(image, 95)
-    
-    # Calcular el IQR
-    IQR = P95 - P5
-    
-    # Definir los límites
-    lower_bound = P5 - 1.5 * IQR
-    upper_bound = P95 + 1.5 * IQR
-    
-    # Ajustar los valores fuera de los límites
-    image_clipped = np.where(image < lower_bound, lower_bound, image)
-    image_clipped = np.where(image > upper_bound, upper_bound, image)
-    
-    return image_clipped
 
 @plot_explanations
 def plot_heatmap(flex_model, node_data, *args, **kwargs):
 
+    output_dir = 'images/temp'
+    if (pathname := kwargs.get('pathname')) is not None: output_dir = pathname
+  
     for exp_name, exps in flex_model["explanations"].items():
-        for e in exps:
-            num_labels = len(e.probs)
+        cur_output_dir = output_dir + '/' + exp_name
+        try:
+            os.makedirs(cur_output_dir, exist_ok=True)
+        except:
+            True # CAMBIAR ESTO PARA MANEJO ERRORES
+    
+        for i, e in enumerate(tqdm(exps, desc=f'Generate heatmaps of {exp_name} explanations: ', mininterval=2)):
+            num_labels = e.num_labels
 
-            fig_size = np.array([(num_labels + 1) * 0.13 * (num_labels + 1), 6])
-            fig, ax =plt.subplots(nrows=2, ncols=(num_labels + 1), figsize=fig_size, squeeze=False)
-            #fig.suptitle(f'{exp_name}')
+            fig_size = np.array([(num_labels + 1) * 0.15 * (num_labels + 1), 8])
+            fig, ax =plt.subplots(nrows=2, ncols=(num_labels + 2)//2, figsize=fig_size, squeeze=False)
+            fig.suptitle(f'{exp_name}')
 
-            max_vals = [np.max(np.abs(e.get_explanation(label=k))) for k in range(num_labels)]
-            max_val = max(max_vals)
-            
             ax[0,0].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"))
             ax[0,0].axis("off");  ax[1, 0].axis("off")
-            ax[0,0].set_title(f'pred: {e.prediction}')
+            ax[0,0].set_title(f'label: {e._label}\npred: {e.prediction}')
 
+            cur_row = 0
+            col_delay = 0 
             for j in range(num_labels):
-                explanation_j = adjust_values_iqr(e.get_explanation(label=j))
-                max_value = np.max(np.abs(explanation_j))
+                explanation_j = e.get_explanation(label=j)
 
+                try:
+                    max_value = np.max(np.abs(explanation_j))
+                except:
+                    print(f'explanation: {explanation_j}')
+                    continue
 
-                ax[0,j+1].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15, extent=(-1, explanation_j.shape[1], explanation_j.shape[0], -1))
-                im = ax[0, j+1].imshow(explanation_j, cmap=red_transparent_blue, vmin=-max_val, vmax=max_val)
-                ax[0, j+1].set_title(f'{j}\n({e.probs[j]*100:.2f}%)')
-                ax[0, j+1].axis("off")
+                if j == ((num_labels + 2)//2 - 1):
+                    cur_row += 1
+                    col_delay = j
 
-                ax[1,j+1].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15, extent=(-1, explanation_j.shape[1], explanation_j.shape[0], -1))
-                im = ax[1,j+1].imshow(explanation_j, cmap=red_transparent_blue, vmin=-max_value, vmax=max_value)
-                
-                print(f'valor maximo para {j}: {max_vals[j]} \npercentiles: {np.percentile(e.get_explanation(label=j), [1,5,95,99])}')
-                print(f'valor maximo para chiped{j}: {max_value} \npercentiles: {np.percentile(explanation_j, [1,5,95,99])}\n')
-
-                fig.colorbar(im, ax=ax[1,j+1], orientation="horizontal")
-                ax[1,j+1].axis("off")
-            
-            cbar_ax = fig.add_axes([0.125, 0.54, 0.775, 0.02])  # Ajusta la posición [left, bottom, width, height]
-            cb = fig.colorbar(im, cax=cbar_ax, orientation="horizontal")
-            cb.outline.set_visible(False)
+                ax[cur_row, j+1-col_delay].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15, extent=(-1, explanation_j.shape[1], explanation_j.shape[0], -1))
+                im = ax[cur_row, j+1-col_delay].imshow(explanation_j, cmap=red_transparent_blue, vmin=-max_value, vmax=max_value)
+                fig.colorbar(im, ax=ax[cur_row, j+1-col_delay], orientation="horizontal")
+                ax[cur_row, j+1-col_delay].axis("off")
+                ax[cur_row, j+1-col_delay].set_title(f'{j}\n({e.probs[j]*100:.2f}%)')
 
             fig.tight_layout()
             fig.subplots_adjust(hspace=0.5)
-            #cb = fig.colorbar(
-            #    im, ax=np.ravel(axes).tolist(), label="SHAP value", orientation="horizontal", aspect=fig_size[0] / 0.2)
-            #cb.outline.set_visible(False)
             
-            plt.show()
+            #plt.show()
+            output_path = os.path.join(cur_output_dir, f'heatmap_{i}.png')
+            fig.savefig(output_path)
+            plt.close(fig)  # Cerrar la figura para liberar memoria
+
+'''
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+def plot_heatmap(flex_model, node_data, *args, **kwargs):
+    # Crear la carpeta de destino si no existe
+    output_dir = 'images/model1'
+    os.makedirs(output_dir, exist_ok=True)
+
+    for exp_name, exps in flex_model["explanations"].items():
+        for i, e in enumerate(tqdm(exps, desc=f'Generate heatmaps of {exp_name} explanations:', mininterval=2)):
+            num_labels = e.num_labels
+
+            fig_size = np.array([(num_labels + 1) * 0.15 * (num_labels + 1), 8])
+            fig, ax = plt.subplots(nrows=2, ncols=(num_labels + 2) // 2, figsize=fig_size, squeeze=False)
+            fig.suptitle(f'{exp_name}')
+
+            # Primera imagen
+            ax[0, 0].imshow(-e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"))
+            ax[0, 0].axis("off")
+            ax[1, 0].axis("off")
+            ax[0, 0].set_title(f'label: {e._label}\npred: {e.prediction}')
+
+            cur_row = 0
+            col_delay = 0 
+            for j in range(num_labels):
+                explanation_j = e.get_explanation(label=j)
+
+                try:
+                    max_value = np.max(np.abs(explanation_j))
+                except Exception as ex:
+                    print(f'Error in explanation {j}: {ex}')
+                    continue
+
+                if j == ((num_labels + 2) // 2 - 1):
+                    cur_row += 1
+                    col_delay = j
+
+                # Segunda imagen
+                ax[cur_row, j + 1 - col_delay].imshow(
+                    -e.data.squeeze(0).squeeze(0), cmap=plt.get_cmap("gray"), alpha=0.15,
+                    extent=(-1, explanation_j.shape[1], explanation_j.shape[0], -1)
+                )
+                im = ax[cur_row, j + 1 - col_delay].imshow(
+                    explanation_j, cmap=red_transparent_blue, vmin=-max_value, vmax=max_value
+                )
+                fig.colorbar(im, ax=ax[cur_row, j + 1 - col_delay], orientation="horizontal")
+                ax[cur_row, j + 1 - col_delay].axis("off")
+                ax[cur_row, j + 1 - col_delay].set_title(f'{j}\n({e.probs[j] * 100:.2f}%)')
+
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0.5)
+
+            # Guardar la figura en la carpeta
+            output_path = os.path.join(output_dir, f'{exp_name}_heatmap_{i}.png')
+            fig.savefig(output_path)
+            plt.close(fig)  # Cerrar la figura para liberar memoria
+
+'''

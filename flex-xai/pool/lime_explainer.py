@@ -1,3 +1,4 @@
+import numpy as np
 from functools import partial
 
 from flex.pool.decorators import set_explainer, get_explanations, get_SP_explanation
@@ -82,9 +83,10 @@ def predict_(color_img, model):
         color_img (Array):  RGB image (the predictor is responsible for correctly formatting the image before making a prediction)
         model (nn.Module): cassification model
     """
+
+    gray_img = np.array([rgb2gray(img) for img in color_img])    
     
-    img_g = rgb2gray(color_img)
-    img_g_tensor = torch.tensor(img_g, dtype=torch.float32)
+    img_g_tensor = torch.tensor(gray_img, dtype=torch.float32).unsqueeze(1)
     
     #plt.imshow(img_g_tensor[0], cmap='gray')
     #plt.title("dentro de _predict")
@@ -111,15 +113,17 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
 
     exp_output = {}
     images = []
+    labels = []
 
     data = kwargs.get("data", None) 
     data_ = data if data is not None else node_data
     dataset = data_.to_torchvision_dataset()
     dataloader = DataLoader(dataset, batch_size=20)
 
-    for imgs, _ in dataloader:
+    for imgs, l in dataloader:
         imgs = imgs.to('cpu')
         images.extend(imgs.tolist())
+        labels.extend(l.tolist())
 
     classifier = partial(predict_, model = flex_model['model'])
     
@@ -127,9 +131,8 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
         cl_name = exp['explainer'].__class__.__name__
         if cl_name == 'LimeImageExplainer':
             explanations = []
-            for data in tqdm(images, desc="Getting LIME explanations: ", mininterval=2):
-                #explanation = exp['explainer'].explain_instance(gray2rgb(data), classifier_fn = classifier, **exp['explain_instance_kwargs'])
-                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], data_to_explain = torch.tensor(data).unsqueeze(0),  **exp['explain_instance_kwargs'])
+            for data, label in tqdm(zip(images, labels), desc="Getting LIME explanations: ", mininterval=2):
+                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], data_to_explain = torch.tensor(data).unsqueeze(0), label = label, **exp['explain_instance_kwargs'])
                 explanations.append(explanation)
             exp_output[exp_name] = explanations
 
