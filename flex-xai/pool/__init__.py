@@ -46,17 +46,17 @@ from flex.pool.decorators import aggregate_weights
 from flex.pool.decorators import set_aggregated_weights
 from flex.pool.decorators import evaluate_server_model
 
-# flex-xai addition
+# ---- flex-xai addition ----
 from flex.pool.decorators import set_explainer
 from flex.pool.decorators import get_explanations
-from flex.pool.decorators import get_SP_explanation
-from flex.pool.decorators import plot_explanations
+from flex.pool.decorators import to_plot_explanation
 
 from flex.pool.explanation import Explanation
-from flex.pool.explanation import plot_heatmap
+from flex.pool.explanation import predict_
+from flex.pool.explanation import to_all_heatmaps
+from flex.pool.explanation import to_centralized
 
 from flex.pool.lime_explainer import set_LimeImageExplainer
-from flex.pool.lime_explainer import predict_
 from flex.pool.lime_explainer import get_LimeExplanations
 from flex.pool.lime_explainer import get_SP_LimeImageExplanation
 
@@ -64,5 +64,3 @@ from flex.pool.shap_explainer import set_DeepShapExplainer
 from flex.pool.shap_explainer import set_GradientShapExplainer
 from flex.pool.shap_explainer import set_KernelShapExplainer
 from flex.pool.shap_explainer import get_ShapExplanations
-
-from flex.pool.xai import Image_SubmodularPick

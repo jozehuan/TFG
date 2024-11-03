@@ -1,19 +1,14 @@
 import numpy as np
-from functools import partial
+import warnings
 
-from flex.pool.decorators import set_explainer, get_explanations, get_SP_explanation
-from flex.pool.xai import Image_SubmodularPick
+from flex.pool.decorators import set_explainer, get_explanations
 
-import lime
 from lime import lime_image
 from lime.wrappers.scikit_image import SegmentationAlgorithm 
 
 from tqdm import tqdm # barra de progreso
 
 from flex.pool.explanation import Explanation
-
-import torch
-from torch.utils.data import DataLoader
 
 from skimage.color import gray2rgb, rgb2gray
 
@@ -74,29 +69,6 @@ def set_LimeImageExplainer(flex_model, *args, **kwargs):
     dict_result['explain_instance_kwargs'] = explain_instance_kwargs
     return dict_result  # OUTPUT: {explainer : explainer , explain_instance_kwargs : {**kwargs}}
 
-
-def predict_(color_img, model):
-    """Convert the image to grayscale and get the model's prediction
-
-    Args:
-    -----
-        color_img (Array):  RGB image (the predictor is responsible for correctly formatting the image before making a prediction)
-        model (nn.Module): cassification model
-    """
-
-    gray_img = np.array([rgb2gray(img) for img in color_img])    
-    
-    img_g_tensor = torch.tensor(gray_img, dtype=torch.float32).unsqueeze(1)
-    
-    #plt.imshow(img_g_tensor[0], cmap='gray')
-    #plt.title("dentro de _predict")
-    #plt.show()
-    
-    with torch.no_grad():  # Desactivar el cálculo de gradientes para la predicción
-        preds = model(img_g_tensor.to('cpu'))  # Enviar la imagen al mismo dispositivo que el modelo (CPU en este caso)
-
-    return preds
-
 @get_explanations
 def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
     '''Generate explanations for the specified data, according to the explainers defined by the specified model, using the decorator @get_explanations
@@ -112,52 +84,88 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
     '''
 
     exp_output = {}
-    images = []
-    labels = []
 
     data = kwargs.get("data", None) 
     data_ = data if data is not None else node_data
     dataset = data_.to_torchvision_dataset()
-    dataloader = DataLoader(dataset, batch_size=20)
-
-    for imgs, l in dataloader:
-        imgs = imgs.to('cpu')
-        images.extend(imgs.tolist())
-        labels.extend(l.tolist())
-
-    classifier = partial(predict_, model = flex_model['model'])
     
     for exp_name, exp in flex_model['explainers'].items():
         cl_name = exp['explainer'].__class__.__name__
         if cl_name == 'LimeImageExplainer':
             explanations = []
-            for data, label in tqdm(zip(images, labels), desc="Getting LIME explanations: ", mininterval=2):
-                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], data_to_explain = torch.tensor(data).unsqueeze(0), label = label, **exp['explain_instance_kwargs'])
+            for i in tqdm(range(len(dataset)), desc="Getting LIME explanations: ", mininterval=2): 
+                data, label = dataset[i]
+                #explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = data.clone().detach().unsqueeze(0), label = label, **exp['explain_instance_kwargs'])
+                
+                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, **exp['explain_instance_kwargs'])
+                
                 explanations.append(explanation)
             exp_output[exp_name] = explanations
 
     return exp_output
 
 
-@get_SP_explanation
+def ERROR_MSG_MIN_ARG_GENERATOR(f, min_args):
+    return f"The decorated function: {f.__name__} is expected to have at least {min_args} argument/s."
+
+
+@get_explanations
 def get_SP_LimeImageExplanation(flex_model, node_data, *args, **kwargs):
+    exp_output = {}
+
+    num_exps_desired = kwargs.get('num_exps_desired', 10)
+    if (e_name := kwargs.get('explanation_name', None)) is None: True # METER AQUI ERROR
+
+    data = kwargs.get("data", None) 
+    data_ = data if data is not None else node_data
+    dataset = data_.to_torchvision_dataset()
+
+    explanations_all = flex_model['explanations'][e_name]
+
+    explanations = []
+    map_exp = {}
+
+    for d, exp in enumerate (explanations_all):
+
+        data, _ = dataset[exp._id_data]
+        _, prediction, _ = exp.get_pred_info(data.unsqueeze(0))
+        
+        if prediction == exp._label:
+            explanations.append(exp.get_explanation(dataset, exp._label))
+            map_exp[len(explanations) - 1] = d
+
+    try:
+        n_pixels = explanations[0].shape[0] * explanations[0].shape[1]
+    except Exception:
+        warnings.warn("Advertencia: No se pudo calcular n_pixels. Terminando la función.")
+        return None
+        
+    num_exps_desired = min(num_exps_desired, len( explanations))
+
+    W = np.zeros((len(explanations), n_pixels))
+    for i, exp in enumerate(explanations):
+            for j, value in enumerate(exp.flatten()):
+                W[i, j] += value
     
-    exp_names = kwargs.get("exp_names", None)
-    if exp_names is None: exp_names = list(flex_model['explanations'].keys())
+    importance = np.sum(abs(W), axis=0)**.5
 
-    # if exp_names is a single value, convert it into a list
-    if isinstance(exp_names, str) or not isinstance(exp_names, (list, tuple)):
-        exp_names = [exp_names]
+    # Now run the SP-LIME greedy algorithm
+    remaining_indices = set(range(len(explanations)))
+    V = []
+    for _ in tqdm(range(num_exps_desired), desc=f"Getting SP-{e_name} explanations: ", mininterval=2):
+        best = 0
+        best_ind = None
+        current = 0
+        for i in remaining_indices:
+            current = np.dot(
+                    (np.sum(abs(W)[V + [i]], axis=0) > 0), importance
+                    )  # coverage function
+            if current >= best:
+                best = current
+                best_ind = i
+        V.append(best_ind)
+        remaining_indices -= {best_ind}
 
-    classifier = partial(predict_, model = flex_model['model'])
-    result_dict = {}
-
-    for name in exp_names:
-        exp = flex_model['explainers'][name]['explainer']
-        data, _ = node_data[0:20].to_list()
-
-        sp_obj = Image_SubmodularPick(exp, data, predict_fn = classifier, **kwargs, **flex_model['explainers'][name]['explain_instance_kwargs'])
-
-        result_dict[name] = sp_obj.sp_explanations
-    
-    return result_dict
+    sp_explanations = [explanations_all[map_exp[i]] for i in V] 
+    exp_output[f'SP-{e_name}'] = sp_explanations
+    return exp_output

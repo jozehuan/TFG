@@ -17,6 +17,7 @@ Copyright (C) 2024  Instituto Andaluz Interuniversitario en Ciencia de Datos e I
 import functools
 from typing import List
 import warnings
+import copy
 
 from flex.common.utils import check_min_arguments
 from flex.model import FlexModel
@@ -142,9 +143,8 @@ def set_explainer(func):
         if "explainers" not in node_flex_model:
             node_flex_model["explainers"] = {}
 
-        name = kwargs.get("name", 'exp') # get the explainer's name
-
-        # gnerate a new name if the name is already taken
+        name = kwargs.get("name", 'exp')
+        # generate a new name if the name is already taken
         if name in node_flex_model["explainers"]:
             base_name = name
             i = 1
@@ -171,32 +171,36 @@ def get_explanations(func):
             node_flex_model["explanations"] = {}
         
         explanations = func(node_flex_model, node_data, *args, **kwargs)
-        node_flex_model["explanations"].update(explanations)
+        if explanations is not None:
+            node_flex_model["explanations"].update(explanations)
 
     return _get_explanations_
 
-
-def get_SP_explanation(func):
-    min_args = 1
-    assert check_min_arguments(func, min_args), ERROR_MSG_MIN_ARG_GENERATOR(
-        func, min_args
-    )
-
+def centralized(func):
     @functools.wraps(func)
-    def _get_SP_explanation_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
-        node_flex_model["SP_explanation"] = func(node_flex_model, node_data, *args, **kwargs)
+    def _centralized_(servers_flex_model: FlexModel, server_data: Dataset):
+        try:
+            model = copy.deepcopy(servers_flex_model["model"])
+            criterion = copy.deepcopy(servers_flex_model["criterion"])
+            optimizer_func = copy.deepcopy(servers_flex_model["optimizer_func"])
+            opt_kwargs = copy.deepcopy(servers_flex_model["optimizer_kwargs"])
+            explainers = copy.deepcopy(servers_flex_model["explainers"])
+        except:
+            model = criterion = optimizer_func = opt_kwargs = explainers = None
 
-    return _get_SP_explanation_
+        
+        return model, criterion, optimizer_func, opt_kwargs, explainers, server_data
+
+    return _centralized_
 
 
-def plot_explanations(func):
-    min_args = 1
-    assert check_min_arguments(func, min_args), ERROR_MSG_MIN_ARG_GENERATOR(
-        func, min_args
-    )
-
+def to_plot_explanation(func):
     @functools.wraps(func)
-    def _plot_explanations_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
-        func(node_flex_model, node_data, *args, **kwargs)
+    def _to_plot_explanation_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
+        dict_result = {} 
+        for exp_name, exps in node_flex_model["explanations"].items():
+            dict_result[exp_name] = func(exps, node_data, *args, **kwargs)
+        
+        return dict_result
 
-    return _plot_explanations_
+    return _to_plot_explanation_
