@@ -53,8 +53,10 @@ from flex.pool.decorators import to_plot_explanation
 
 from flex.pool.explanation import Explanation
 from flex.pool.explanation import predict_
-from flex.pool.explanation import to_all_heatmaps
-from flex.pool.explanation import to_centralized
+from flex.pool.explanation import all_explanations
+from flex.pool.explanation import label_explanations
+from flex.pool.explanation import segment_explanations
+from flex.pool.explanation import to_centralized 
 
 from flex.pool.lime_explainer import set_LimeImageExplainer
 from flex.pool.lime_explainer import get_LimeExplanations

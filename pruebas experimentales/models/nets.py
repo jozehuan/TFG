@@ -6,7 +6,25 @@ from flex.pool import init_server_model
 
 #---- simple neuronal network ----
 
-class Net(nn.Module):  
+class Net(nn.Module):
+    """ A simple neural network for image classification (e.g., MNIST dataset).
+    
+    This model consists of:
+    - A flattening layer to convert the input image into a vector.
+    - Two fully connected (linear) layers.
+    - ReLU and Softmax activation functions to produce class probabilities.
+    
+    Parameters
+    ----------
+    num_classes : int, optional
+        The number of output classes for classification. Default is 10.
+    
+    Returns
+    -------
+    torch.Tensor
+        Probabilities for each class, with values between 0 and 1 for each output node.
+    """
+    
     def __init__(self, num_classes=10):
         super().__init__()
         self.flatten = nn.Flatten(start_dim=1)
@@ -22,6 +40,20 @@ class Net(nn.Module):
 
 @init_server_model
 def build_server_Net_model():  
+    """ Builds and initializes the server-side neural network model for FL, using the decorator @init_server_model.
+    This function creates a FlexModel instance and sets up the simple neural network, loss criterion, and optimizer.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    FlexModel
+        An instance of FlexModel containing the configured neural network model,
+        the loss function (CrossEntropyLoss), and the optimizer (Adam).
+    """
+    
     server_flex_model = FlexModel()
 
     server_flex_model["model"] = Net()
@@ -35,6 +67,23 @@ def build_server_Net_model():
 #---- convolutional network ----
 
 class Net_CNN(nn.Module):
+    """ A Convolutional Neural Network (CNN) for image classification.
+
+    This model consists of:
+    - Convolutional layers with ReLU activations and max pooling for feature extraction.
+    - Dropout layers to prevent overfitting.
+    - Fully connected layers followed by ReLU and Softmax for classification.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    torch.Tensor
+        Probabilities for each class, with values between 0 and 1 for each output node.
+    """
+    
     def __init__(self):
         super().__init__()
 
@@ -63,60 +112,23 @@ class Net_CNN(nn.Module):
     
 @init_server_model
 def build_server_CNN_model():
-    
-    """
-    Inicializa el servidor
+    """ Builds and initializes the server-side neural network model for FL, using the decorator @init_server_model.
+    This function creates a FlexModel instance and sets up the CNN, loss criterion, and optimizer.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    FlexModel
+        An instance of FlexModel containing the configured neural network model,
+        the loss function (CrossEntropyLoss), and the optimizer (Adam).
     """
     
     server_flex_model = FlexModel()
 
     server_flex_model["model"] = Net_CNN()
-    # Required to store this for later stages of the FL training process
-    server_flex_model["criterion"] = torch.nn.CrossEntropyLoss()
-    server_flex_model["optimizer_func"] = torch.optim.Adam
-    server_flex_model["optimizer_kwargs"] = {}
-
-    return server_flex_model
-
-# 
-class CNN_CIFAR10(nn.Module):
-    def __init__(self):
-        super(CNN_CIFAR10, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        
-        self.pool1 = nn.MaxPool2d(2, 2)
-        self.pool2 = nn.MaxPool2d(2, 2)
-        self.pool3 = nn.MaxPool2d(2, 2)
-        
-        self.fc1 = nn.Linear(128 * 4 * 4, 256)
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, 10)
-        self.dropout = nn.Dropout(0.5)
-
-    def forward(self, x):
-        x = self.pool1(torch.relu(self.conv1(x)))
-        x = self.pool2(torch.relu(self.conv2(x)))
-        x = self.pool3(torch.relu(self.conv3(x)))
-        x = x.reshape(-1, 128 * 4 * 4)
-        x = torch.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        
-        return nn.functional.softmax(x, dim=1)
-
-@init_server_model
-def build_server_CNN_CIFAR10_model():
-    
-    """
-    Inicializa el servidor
-    """
-    
-    server_flex_model = FlexModel()
-
-    server_flex_model["model"] = CNN_CIFAR10()
     # Required to store this for later stages of the FL training process
     server_flex_model["criterion"] = torch.nn.CrossEntropyLoss()
     server_flex_model["optimizer_func"] = torch.optim.Adam

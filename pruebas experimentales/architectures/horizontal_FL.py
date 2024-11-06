@@ -1,8 +1,5 @@
 import numpy as np
-
 from collections import Counter, OrderedDict
-
-import matplotlib.pyplot as plt
 
 import torch
 from torchvision import datasets
@@ -26,15 +23,30 @@ from flex.pool import set_DeepShapExplainer
 from flex.pool import set_GradientShapExplainer, set_KernelShapExplainer
 from flex.pool import get_ShapExplanations
 
-from flex.pool import  to_all_heatmaps, to_centralized
+from flex.pool import all_explanations, label_explanations, segment_explanations
+from flex.pool import to_centralized
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-device = 'cpu'
+from enum import Enum
+class archs(Enum):
+    CS = ['client-server','cs']
+    P2P = ['peer-to-peer','p2p']
+
 
 def train(client_flex_model: FlexModel, client_data: Dataset):
-    """Función de entramiento del modelo:
-            client_flex_model - modelo definido
-            client_data - datos del cliente a usar
+    """ Trains the client-side neural network model.
+
+    This function prepares the client data for training, initializes the model and optimizer,
+    and performs one training epoch. It updates the model parameters based on the loss computed
+    during training.
+
+    Parameters
+    ----------
+    client_flex_model : FlexModel
+        An instance of FlexModel containing the model, optimizer, and criterion to be used for training.
+    client_data : Dataset
+        The dataset containing training samples for the client.
     """
     
     train_dataset = client_data.to_torchvision_dataset()
@@ -58,22 +70,36 @@ def train(client_flex_model: FlexModel, client_data: Dataset):
     model = model.to(device)
     criterion = client_flex_model["criterion"]
     
-    for _ in [0]:
-        for imgs, labels in cl_dataloader:
-            imgs, labels = imgs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            
-            pred = model(imgs)
-            loss = criterion(pred, labels)
-            loss.backward()
-            optimizer.step()
-
+    for imgs, labels in cl_dataloader:
+        imgs, labels = imgs.to(device), labels.to(device)
+        optimizer.zero_grad()
+        
+        pred = model(imgs)
+        loss = criterion(pred, labels)
+        loss.backward()
+        optimizer.step()
 
 def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
-    """Función de evaluación del modelo entrenado:
-            server_flex_model - modelo definido
-            test_data - datos a usar
+    """ Evaluates the global model using the provided test dataset.
+
+    This function sets the model to evaluation mode, computes the loss and accuracy
+    on the test dataset, and returns these metrics. 
+
+    Parameters
+    ----------
+    server_flex_model : FlexModel
+        An instance of FlexModel containing the global model and the loss criterion.
+    test_data : Dataset
+        The dataset containing test samples to evaluate the model's performance.
+
+    Returns
+    -------
+    test_loss : float
+        The average loss over the test dataset.
+    test_acc : float
+        The accuracy of the model on the test dataset, represented as a fraction between 0 and 1.
     """
+    
     model = server_flex_model["model"]
     model.eval()
     test_loss = 0
@@ -112,65 +138,71 @@ class HFL_System:
                  n_classes: int = 2, balance_nodes : bool = True, nodes_weights: list = None, balance_factor : float = 0.25,
                  server_weight : float = 0.2, balance_classes : bool = True, alpha_inf : float = 0.4, alpha_sup : float = 0.6):
         
-        """
-        Constructor del modelo HFL
-        Inicializa la clase, cargando el dataset y configurando la distribución
-        de los datos en los nodos.
+        """ Initializes the HFL model.
 
-        Args
+        This constructor initializes the class by loading the dataset and configuring 
+        the distribution of data among the nodes. It supports various datasets and 
+        offers flexibility in how the data is distributed and balanced across nodes.
+
+        Parameters
         ----------
+        name : str
+            The name of the system. Default is 'modelname'.
         dataset_root : str
-            Nombre del conjunto de datos [default: dataset]
+            The directory where the dataset is located. Default is 'datasets'.
+        dataset : str
+            The name of the dataset (e.g., 'mnist', 'fashion_mnist'). Default is 'mnist'
         download : bool
-            Indica si se debe descargar el conjunto de datos de internet [default: True]
+            Indicates whether to download the dataset. Default is True.
         transform : callable
-            Transformaciones a aplicar al conjunto de datos.
+            Transformations to apply to the dataset (e.g., normalization, augmentation).
+            Default is None.
         config_seed : int
-            Semilla para la configuración aleatoria [default: 0]
+            Seed for random configuration. Default is 0.
         replacement : bool
-            Si el procedimiento de muestreo utilizado para dividir el conjunto 
-            de datos centralizado es con reemplazo o no [default: False]
+            Indicates whether the sampling procedure used to split the centralized dataset 
+            is with replacement or not. Default is False.
         nodes : int
-            Número de nodos o propietarios [default: 2]
+            The number of nodes or owners. Default is 2.
         n_classes : int
-            Número de clases [default: 2]
+            The number of classes in the dataset. Default is 2.
         balance_nodes : bool
-            Indica si los nodos deben de tener todos el mismo número de instancias [default: True]
-        nodes_weights : list 
-            Pesos de los nodos, si se proporciona [default: None]
+            Indicates whether the nodes should all have the same number of instances.
+            Default is True.
+        nodes_weights : list
+            Weights of the nodes if provided. Default is None.
         balance_factor : float
-            Factor de balance, debe estar en el rango (0,1) [default: 0.25]
-         server_weight : float
-             Peso del servidor, debe estar en el rango (0,1) [default: 0.2]
-        balance_classes: bool
-            Indica si la cantidad de instancias de cada clase en cada nodo debe 
-            estar balanceada [default: True]
-        alpha_inf: float
-            Ínfimo de normalización [default: 0.4]
-        alpha_sup: float
-            Supremo de normalización [default: 0.6]
+            The factor used to balance the data distribution, must be in the range (0, 1).
+            Default is 0.25.
+        server_weight : float
+            Weight of the server in the data distribution, must be in the range (0, 1).
+            Default is 0.2.
+        balance_classes : bool
+            Indicates whether the instances of each class in each node should be balanced.
+            Default is True.
+        alpha_inf : float
+            The lower bound for normalization of class distributions. Default is 0.4.
+        alpha_sup : float
+            The upper bound for normalization of class distributions. Default is 0.6.
         """
-        # -- NOTA: VER COMO GENERALIZAR DISTRIBUCIONES ALEATORIAS --
-        #       NO USAR SÓLO LA UNIFORME
         
         np.random.seed(config_seed)
         torch.manual_seed(config_seed)
         
         self._name = name
+        self._arch = None
         
         # Carga del dataset y transformación a objeto 'flex.data.Dataset'
-        if dataset in ('mnist', 'MNIST'):
+        if dataset.lower() == 'mnist':
             dt_train = datasets.MNIST(root=dataset_root, train=True, download=download, transform=transform)
             dt_test = datasets.MNIST(root=dataset_root, train=False, download=download, transform=transform)
             dt_all = torch.utils.data.ConcatDataset([dt_train, dt_test])
-        if dataset in ('fashion_mnist', 'Fashion_MNIST'):
+        if dataset.lower() == 'fashion_mnist':
             dt_train = datasets.FashionMNIST(root=dataset_root, train=True, download=download, transform=transform)
             dt_test = datasets.FashionMNIST(root=dataset_root, train=False, download=download, transform=transform)
             dt_all = torch.utils.data.ConcatDataset([dt_train, dt_test])
-        if dataset in ('CIFAR10', 'cifar10'):
-            dt_train = datasets.CIFAR10(root=dataset_root, train=True, download=download, transform=transform)
-            dt_test = datasets.CIFAR10(root=dataset_root, train=False, download=download, transform=transform)
-            dt_all = torch.utils.data.ConcatDataset([dt_train, dt_test])
+        else: True
+            #Retornar error
             
         self._dataset = flex.data.Dataset.from_torchvision_dataset(dt_all)
         self._dataset_lenght = len(self._dataset)
@@ -224,129 +256,78 @@ class HFL_System:
         # Se establece la distribución de los datos en cada nodo
         self._fed_dataset = flex.data.FedDataDistribution.from_config(self._dataset, self._config)
         
-        
-    def barplot_(self, c: dict, k: int, ax):
-        
-        """
-        Gráfico de barras
-        Muestra la cantidad de instancias de cada clase para un propietario en
-        específico.
+    
+    def class_counter(self, node_id : int = None):    
+        """ Counts the number of instances per class in a specific node or across all nodes.
 
+        This function retrieves the count of each class in a specified node or in all nodes if no node is specified. 
+        The result is returned as a list of tuples containing the node index, the class counts, and the total number 
+        of instances in that node. Optionally, it can also display the class distribution for each node in bar plot form.
+    
         Params
         ----------
-        c : dic
-            Diccionario que posee las cantidades de cada clase
-        k : int
-            Nodo específico
-        ax : matplotlib.axes.Axes
-            Eje sobre el cual dibujar el gráfico
-        """
+        node_id : int, optional
+            The specific node to count instances for. If None, the function counts 
+            instances for all nodes. Default is None.
         
-        colores = plt.cm.viridis(np.linspace(0, 1, self._num_classes)) 
-        ax.bar(c.keys(), c.values(), color=colores)
-        ax.set_xlabel('Classes')
-        ax.set_ylabel('Count')
-        ax.set_title(f"node {k} (total {len(self._fed_dataset[k].to_list()[1])})")
-        
-        v_max = max(c.values()); v_min = min(c.values())
-        ax.set_ylim(max(0, v_min-(v_max-v_min)/2))
-        
-        # Mostrar el gráfico
-        ax.set_xticks(list(c.keys()))
-        ax.set_xticklabels(list(c.keys()))
-    
-    def class_counter(self, node_id : int = None, ncols: int = 2, plot : bool = False):
-        
-        """
-        Contador de elmentos de cada clase
-        Cuenta la cantidad de cada elemento en un nodo en específico o en todos en general.
-        También tiene la opción de graficar el resultado.
-
-        Parameters
+        Return
         ----------
-        node_id : int
-            Propietario específico [Default: None]
-        plot : bool
-            Si se requiere de graficar el resultado
+        list of tuples
+            A list of tuples, each containing:
+                - int: the node index,
+                - dict: a dictionary with class counts (keys are class labels and values are counts),
+                - int: the total count of instances in that node.
         """
         
-        res = ''
-        if node_id is None:
-            if plot:
-                nrows = (self._config.n_nodes+ncols-1)//ncols
-                fig, axs = plt.subplots(nrows, ncols, figsize=(6*ncols, 4 * nrows))
-                axs = axs.flatten() 
+        nodes = range(self._config.n_nodes) if node_id is None else [node_id]
         
-            for k in range(self._config.n_nodes):
-                res = res + "NODE --- " + str(k) + ":\n"
-                conteo = Counter(self._fed_dataset[k].to_list()[1])
-                conteo = dict(sorted(conteo.items()))
-                res = res + "\t" + str(conteo) + "\n"
-                res = res + "\t" + "Total: " + str(len(self._fed_dataset[k].to_list()[1])) + "\n\n"
-                
-                if plot: 
-                    self.barplot_(conteo, k, axs[k])
-            if plot:
-                plt.tight_layout()
-                plt.show()
-                
-        else:
-            res = res + "NODE --- " + str(node_id) + ":\n"
-            conteo = Counter(self._fed_dataset[node_id].to_list()[1])
-            conteo = dict(sorted(conteo.items()))
-            res = res + "\t" + str(conteo) + "\n"
-            res = res + "\t" + "Total: " + str(len(self._fed_dataset[node_id].to_list()[1])) + "\n\n"
-            
-            
-            if plot:
-                fig, ax = plt.subplots(figsize=(6, 4))
-                self.barplot_(conteo, node_id, ax)
-                plt.tight_layout()
-                plt.show()
+        res = [(k, dict(sorted((c := Counter(self._fed_dataset[k].to_list()[1])).items())),
+                sum(c.values())) for k in nodes]
             
         return res
     
-    def set_model(self,  build : callable, arch : str = 'cs', server_id: int = 0):
+    def set_model(self,  build : callable, arch : str = 'cs', server_id: int = 0):  
+        """ Sets up the horizontal federated model.
         
-        """
-        Establece el modelo federado horizontal.
-
-        Parameters
+        Params
         ----------
         build : callable
-            Diccionario que posee las cantidades de cada clase
-        arch : str  # <----- cambiar a un Enum
-            Tipo de arquitectura federada [Default: client-server]
+            Function to initialize the model.
+        arch : Enum
+            Type of federated architecture, specifying the setup for the federated learning structure. 
+            Default is 'cs'.
         server_id : int
-            Identificador del servidor (si lo hubiera) [Default: 0]
+            Identifier of the server (if applicable). Default is 0.
         """
-        if arch in ('client-server', 'cs'):
+        
+        if arch in archs.CS:
             self._flex_pool = FlexPool.client_server_pool(
                  fed_dataset=self._fed_dataset, server_id=server_id, init_func=build)
             
-        if arch in ('peer-to-peer', 'p2p'):
+        elif arch in archs.P2P:
             self._flex_pool = FlexPool.p2p_pool(fed_dataset=self._fed_dataset, init_func=build)
             
+        else:
+            raise ValueError(f"Invalid architecture type. Must be {archs.CS} or {archs.P2P}")
+            
     def train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = 2):
+        """ Main function for model training.
         
-        """
-        Función principal para el entrenamiento del modelo.
-        
-        Parameters
+        Params
         ----------
-        n_rounds : int = 10 
-            Número de rondas
-        clients_per_round : int = 2
-            Número de clientes por ronda
+        n_rounds : int, optional
+            Number of training rounds. Default is 10.
+        clients_per_round : int, optional
+            Number of clients participating per round. Default is 2.
         """
         
         z_clients = self._flex_pool.clients
         z_servers = self._flex_pool.servers
         
-        print(
-            f"\nNumber of nodes in the pool: {len(self._flex_pool)} ({len(z_servers)} server plus {len(z_clients)} clients) \nServer ID: {list(z_servers._actors.keys())}. The server is also an aggregator.\n"
-        )
-        
+        if self._arch in archs.CS:
+            print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nClient-Server architecture ({len(z_servers)} server plus {len(z_clients)} clients) \nServer ID: {list(z_servers._actors.keys())}. The server is also an aggregator.\n")
+        elif self._arch in archs.P2P:
+            print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nPeer-to-Peer architecture")
         
         for i in range(n_rounds):
             print(f"\nRunning round: {i+1} of {n_rounds}")
@@ -371,39 +352,99 @@ class HFL_System:
             print(f"Server: Test acc: {acc:.4f}, test loss: {loss:.4f}")
             
     
-    def set_explainers(self, *args, **kwargs):
-        # self._flex_pool.clients.map(set_LimeImageExplainer, name='lime_slic', **kwargs)
-        # self._flex_pool.clients.map(set_DeepShapExplainer, name='deepshap')
-        # self._flex_pool.clients.map(set_GradientShapExplainer, name='gradshap', n_samples=1000, stdevs=0.5)
-        # self._flex_pool.clients.map(set_KernelShapExplainer, name='kernelshap', n_samples=1000, perturbations_per_eval=50)
+    def set_explainers(self):
+        """ Set predefinided explainers to the servers."""
         
-        self._flex_pool.servers.map(set_LimeImageExplainer, name='lime_slic', top_labels = 10, num_samples=2000, algo_type='slic', segment_params={'n_segments' : 200, 'compactness' : 0.05, 'sigma' : 0.4})
+        self._flex_pool.map(set_LimeImageExplainer, name='lime_slic', top_labels = 10, num_samples=2000, algo_type='slic', segment_params={'n_segments' : 200, 'compactness' : 0.05, 'sigma' : 0.4})
         #self._flex_pool.servers.map(set_LimeImageExplainer, name='lime_quick', top_labels = 10, num_samples=2000, algo_type='quickshift', segment_params={'kernel_size' : 1, 'max_dist' : 2, 'ratio' : 0.2, 'sigma' : 0.05})
         #self._flex_pool.servers.map(set_LimeImageExplainer, name='lime__felz', top_labels = 10, num_samples=2000, algo_type='felzenszwalb', segment_params={'scale' : 0.4, 'sigma' : 0.1, 'min_size' : 5})
         
-        self._flex_pool.servers.map(set_DeepShapExplainer, name='deepshap')
-        self._flex_pool.servers.map(set_GradientShapExplainer, name='gradshap', n_samples=1000, stdevs=0.5)
-        self._flex_pool.servers.map(set_KernelShapExplainer, name='kernelshap', n_samples=1000, perturbations_per_eval=50)
+        self._flex_pool.map(set_DeepShapExplainer, name='deepshap')
+        self._flex_pool.map(set_GradientShapExplainer, name='gradshap', n_samples=1000, stdevs=0.5)
+        self._flex_pool.map(set_KernelShapExplainer, name='kernelshap', n_samples=1000, perturbations_per_eval=50)
         
         
     def get_explanations(self, data = None):
-        # selected_clients = self._flex_pool.clients.select(1).clients 
+        """ Get all the explanations of the servers. Also include SP-explanations.
         
-        # selected_clients.map(get_LimeExplanations, data=data)
-        # selected_clients.map(get_ShapExplanations, data=data)
-        # selected_clients.map(plot_heatmap, pathname='images/' + self._name)
+        Params
+        ----------
+        data : flex.data.dataset.Dataset, optional
+            Data to be explained. Default None
+            If None, explanations are generated for the entire dataset.
+            
+        Returns
+        ----------
+        tuple
+            - dict: The explanations generated by the servers.
+            - str: The system's name.
+            
+        """ 
         
         self._flex_pool.servers.map(get_LimeExplanations, data=data)
         self._flex_pool.servers.map(get_ShapExplanations, data=data)
             
-        #self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'lime_slic')
+        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'lime_slic')
+        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'deepshap')
+        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'gradshap')
+        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'kernelshap')
         
-        return (self._flex_pool.servers.map(to_all_heatmaps, data=data)[0], self._name)
+        return (self._flex_pool.servers.map(all_explanations, data=data)[0], self._name)
             
-        #self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'lime_slic')
+    def label_explanations(self, data = None):
+        """ Get all the explanations of the servers, only for the label's image.
         
-   
+        Params
+        ----------
+        data : flex.data.dataset.Dataset, optional
+            Explained data. Default None
+            If None, explanations are generated for the entire dataset.
+            
+        Returns
+        ----------
+        tuple
+            - dict: The explanations generated by the servers for the specified label's image.
+            - str: The system's name.
+        """
+        
+        return (self._flex_pool.servers.map(label_explanations, data=data)[0], self._name)
+    
+    def segments_lime(self, data= None):
+        """ Get segments images of the LIME explainers and KernelShap
+        
+        Params
+        ----------
+        data : flex.data.dataset.Dataset, optional
+            Explained data. Default None
+            If None, explanations are generated for the entire dataset.
+            
+        Returns
+        ----------
+        tuple
+            - dict: The segments images.
+            - str: The system's name.
+        """ 
+        
+        return (self._flex_pool.servers.map(segment_explanations, data=data)[0], self._name)
+    
     def to_centalized(self):
+        """ Get a centralized version of the federated dataset.
+        
+        The clients' data constitutes the train dataset.
+        The servers' data constitutes the test dataset.
+        
+        Returns
+        ----------
+        tuple
+            - model: federated system model.
+            - criterion: The loss function used for training the model.
+            - optimizer_func: The optimizer function to be applied to the model.
+            - opt_kwargs: Additional keyword arguments for the optimizer function.
+            - explainers: Explainability models.
+            - train_data: Centralized training dataset, generated from clients' data.
+            - test_data: Centralized test dataset, generated from servers' data.
+        """ 
+        
         server_info = self._flex_pool.servers.map(to_centralized)
         model, criterion, optimizer_func, opt_kwargs, explainers, server_data = server_info[0]
         test_data = server_data.to_torchvision_dataset()

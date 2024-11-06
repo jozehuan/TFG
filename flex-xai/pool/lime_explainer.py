@@ -95,8 +95,6 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
             explanations = []
             for i in tqdm(range(len(dataset)), desc="Getting LIME explanations: ", mininterval=2): 
                 data, label = dataset[i]
-                #explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = data.clone().detach().unsqueeze(0), label = label, **exp['explain_instance_kwargs'])
-                
                 explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, **exp['explain_instance_kwargs'])
                 
                 explanations.append(explanation)
@@ -127,11 +125,11 @@ def get_SP_LimeImageExplanation(flex_model, node_data, *args, **kwargs):
 
     for d, exp in enumerate (explanations_all):
 
-        data, _ = dataset[exp._id_data]
+        data, label = dataset[exp._id_data]
         _, prediction, _ = exp.get_pred_info(data.unsqueeze(0))
         
         if prediction == exp._label:
-            explanations.append(exp.get_explanation(dataset, exp._label))
+            explanations.append(exp.get_explanation(data, label))
             map_exp[len(explanations) - 1] = d
 
     try:

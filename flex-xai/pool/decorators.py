@@ -199,7 +199,8 @@ def to_plot_explanation(func):
     def _to_plot_explanation_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
         dict_result = {} 
         for exp_name, exps in node_flex_model["explanations"].items():
-            dict_result[exp_name] = func(exps, node_data, *args, **kwargs)
+            if (result := func(exps, node_data, *args, **kwargs)) is not None:
+                dict_result[exp_name] = result
         
         return dict_result
 
