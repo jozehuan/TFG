@@ -40,7 +40,7 @@ def cosine_dist(img1, img2):
     """
     img1_f = img1.flatten()
     img2_f = img2.flatten()
-    return np.dot(img1_f, img2_f) / (np.linalg.norm(img1_f)*np.linalg.norm(img2_f))
+    return 1 - np.dot(img1_f, img2_f) / (np.linalg.norm(img1_f)*np.linalg.norm(img2_f))
 
 def IoU_metric(img1, img2, threshold):
     """ Calculate the Intersection over Union (IoU) metric between two images using a symmetric threshold.
@@ -62,10 +62,15 @@ def IoU_metric(img1, img2, threshold):
         and a value of 0 indicates no overlap.
     """
     
-    img1_above = img1 > threshold
-    img1_below = img1 < -threshold
-    img2_above = img2 > threshold
-    img2_below = img2 < -threshold
+    percent = threshold*100
+    flat_img1= img1.flatten()
+    flat_img2= img2.flatten()
+    
+    img1_above = img1 >= np.percentile(flat_img1, percent)
+    img1_below = img1 <= np.percentile(flat_img1, 100-percent)
+    img2_above = img2 >= np.percentile(flat_img2, percent)
+    img2_below = img2 <= np.percentile(flat_img2, 100-percent)
+    
     
     intersc_above = np.logical_and(img1_above, img2_above).sum()
     intersc_below = np.logical_and(img1_below, img2_below).sum()
@@ -73,12 +78,13 @@ def IoU_metric(img1, img2, threshold):
     union_above = np.logical_or(img1_above, img2_above).sum()
     union_below = np.logical_or(img1_below, img2_below).sum()
 
-    total_intersc = intersc_above + intersc_below
-    total_union = union_above + union_below
-
-    combined_iou = total_intersc / total_union if total_union != 0 else 0
-    return combined_iou
-
+    #combined_iou = total_intersc / total_union if total_union != 0 else 0
+    #return combined_iou
+    
+    pos_iou = intersc_above / union_above if union_above != 0 else 0.0
+    neg_iou = intersc_below / union_below if union_below != 0 else 0.0
+    
+    return pos_iou, neg_iou
 
 def compute_similarity(fed_exps, central_exps):
     """ Compute the similarity metrics between federated and central explanations.
@@ -139,8 +145,8 @@ def compute_similarity(fed_exps, central_exps):
             cosine_result = cosine_dist(fed_img_n, central_img_n)
             results['COSINE'] = cosine_result
             
-            iou_result = IoU_metric(fed_img_n, central_img_n, 0.5)
-            results['IoU'] = iou_result
+            pos_iou_result, neg_iou_result = IoU_metric(fed_img, central_img, 0.9)
+            results['IoU'] = (pos_iou_result, neg_iou_result)
             
             results_imgs[exp_name].append(results)
             

@@ -7,8 +7,7 @@ from flex.pool.decorators import to_plot_explanation, centralized
 
 from skimage.color import gray2rgb, rgb2gray
 
-
-from skimage.segmentation import mark_boundaries
+device = 'cpu'
 
 def predict_(color_img, model, to_gray):
     """Convert the image to grayscale and get the model's prediction
@@ -44,12 +43,14 @@ class Explanation:
         self._label = label
 
         self._explain_instance = None
+        self._feature_mask = None
         self._explanations = None 
 
     def get_pred_info(self, data):
+        self._model = self._model.to(device)
         self._model.eval()
-        pred = self._model(data)
-        probs = pred[0].tolist()
+        pred = self._model(data.to(device))
+        probs = torch.softmax(pred, dim=1)[0].tolist() #probs = pred[0].tolist()
         num_labels = len(probs)
         prediction = torch.argmax(pred, dim=1).item()
 
@@ -91,6 +92,9 @@ class Explanation:
             return self.lime_explanation(data, label)
         
         if class_name in ('DeepLiftShap', 'GradientShap', 'KernelShap'):
+
+            if(feature_mask := self._explain_kwargs.get('feature_mask')) is not None: 
+                self._feature_mask = feature_mask
             return self.shap_explanation(data, label)
         
     def lime_segments(self, data):
@@ -110,6 +114,8 @@ class Explanation:
         
         if class_name == 'LimeImageExplainer':
             return self.lime_segments(data)
+        elif class_name == 'KernelShap':
+            return self._feature_mask.squeeze(0).squeeze(0).numpy()
         else: 
             return None
 
@@ -123,8 +129,10 @@ def all_explanations(exps, node_data, *args, **kwargs):
     dataset = data_.to_torchvision_dataset()
 
     exp_output = []
+    exp_name = kwargs.get("name", None)
 
-    for e in exps:
+    from tqdm import tqdm
+    for e in tqdm(exps, desc=f"Computing {exp_name} explanations: ", mininterval=2): 
         explanations = []
 
         data, label = dataset[e._id_data]

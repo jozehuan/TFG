@@ -36,7 +36,7 @@ class Net(nn.Module):
         x = self.fc1(x)
         x = nn.functional.relu(x)
         x = self.fc2(x)
-        return nn.functional.softmax(x, dim=1)
+        return x
 
 @init_server_model
 def build_server_Net_model():  
@@ -101,9 +101,8 @@ class Net_CNN(nn.Module):
             nn.ReLU(),
             nn.Dropout(),
             nn.Linear(50, 10),
-            nn.Softmax(dim=1),
         )
-
+        
     def forward(self, x):
         x = self.conv_layers(x)
         x = x.view(-1, 320)
@@ -129,6 +128,76 @@ def build_server_CNN_model():
     server_flex_model = FlexModel()
 
     server_flex_model["model"] = Net_CNN()
+    # Required to store this for later stages of the FL training process
+    server_flex_model["criterion"] = torch.nn.CrossEntropyLoss()
+    server_flex_model["optimizer_func"] = torch.optim.Adam
+    server_flex_model["optimizer_kwargs"] =  {} # {'lr' : 0.0001} # <-- para caso 3
+
+    return server_flex_model
+
+
+class Net_fashion_CNN(nn.Module):
+    """ A Convolutional Neural Network (CNN) for image classification.
+
+    This model consists of:
+    - Convolutional layers with ReLU activations and max pooling for feature extraction.
+    - Dropout layers to prevent overfitting.
+    - Fully connected layers followed by ReLU and Softmax for classification.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    torch.Tensor
+        Probabilities for each class, with values between 0 and 1 for each output node.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),  
+            nn.MaxPool2d(2),
+            nn.LeakyReLU(negative_slope=0.01),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Dropout(0.3),
+            nn.MaxPool2d(2),
+            nn.LeakyReLU(negative_slope=0.01),
+        )
+        self.fc_layers = nn.Sequential(
+            nn.Linear(64*7*7, 128),
+            nn.LeakyReLU(negative_slope=0.01),
+            nn.Dropout(),
+            nn.Linear(128, 10),
+        )
+
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = x.view(-1, 64*7*7)
+        x = self.fc_layers(x)
+        return x
+    
+@init_server_model
+def build_server_fashion_CNN_model():
+    """ Builds and initializes the server-side neural network model for FL, using the decorator @init_server_model.
+    This function creates a FlexModel instance and sets up the CNN, loss criterion, and optimizer.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    FlexModel
+        An instance of FlexModel containing the configured neural network model,
+        the loss function (CrossEntropyLoss), and the optimizer (Adam).
+    """
+    
+    server_flex_model = FlexModel()
+
+    server_flex_model["model"] = Net_fashion_CNN()
     # Required to store this for later stages of the FL training process
     server_flex_model["criterion"] = torch.nn.CrossEntropyLoss()
     server_flex_model["optimizer_func"] = torch.optim.Adam

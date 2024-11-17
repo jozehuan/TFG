@@ -13,7 +13,12 @@ for j in np.linspace(0, 1, 100):
     colors.append((255.0 / 255, 13.0 / 255, 87.0 / 255, j))
 red_transparent_blue = LinearSegmentedColormap.from_list("red_transparent_blue", colors)
 
-def plot_heatmaps(explainers, name):
+colors = []
+for j in np.linspace(0, 1, 100):
+    colors.append((255.0 / 255, 13.0 / 255, 87.0 / 255, j))
+red_transparent = LinearSegmentedColormap.from_list("red_transparent", colors)
+
+def plot_heatmaps(explainers, name, n_round : int = None):
     """ Generates and saves heatmaps for the explanations produced by the specified explainers.
 
     This function iterates through the explanatios of each explainer, generating heatmaps for 
@@ -35,6 +40,7 @@ def plot_heatmaps(explainers, name):
             
             if i == 0:
                 output_dir = f"images/{name}/{exp_name}/heatmaps_{len_exp-1}"
+                
                 try:
                     os.makedirs(output_dir, exist_ok=True)
                 except Exception as e:
@@ -79,7 +85,10 @@ def plot_heatmaps(explainers, name):
             fig.tight_layout()
             fig.subplots_adjust(hspace=0.5)
             
-            output_path = os.path.join(output_dir, f'heatmap_{i}.png')
+            if n_round is None:
+                output_path = os.path.join(output_dir, f'heatmap_{i}.png')
+            else:
+                output_path = os.path.join(output_dir, f'heatmap_{i}__round_{n_round}.png')
             fig.savefig(output_path)
             plt.close(fig)
 
@@ -120,12 +129,12 @@ def plot_heatmaps_compared(fed_exps, central_exps, metrics):
         for i, (fed_d, central_d) in tqdm(enumerate(zip(fed_data, central_data)), desc=f'Generate heatmaps (compared) of {exp_name} explanations: ', mininterval=2):
             
                 
-            fig_size = np.array([3 * 1.7 , 5])
-            fig, ax =plt.subplots(nrows=1, ncols=3, figsize=fig_size, squeeze=False)
+            fig_size = np.array([3 * 1.7 , 6])
+            fig, ax =plt.subplots(nrows=2, ncols=3, figsize=fig_size, squeeze=False)
             
             original_img, original_img_str = fed_d[-1]
             ax[0,0].imshow(original_img, cmap=plt.get_cmap("gray"))
-            ax[0,0].axis("off")
+            ax[0,0].axis("off"); ax[1,0].axis("off")
             ax[0,0].set_title(original_img_str)
             
             label = re.search(r"label:\s*(\d+)", original_img_str)
@@ -152,17 +161,32 @@ def plot_heatmaps_compared(fed_exps, central_exps, metrics):
             ax[0,2].axis("off")
             ax[0,2].set_title('central: ' + central_img_str)
             
+            percent = 90
+            flat_fed_img = fed_img.flatten()
+            flat_central_img = central_img.flatten()
+            
+            fed_img_above = fed_img >= np.percentile(flat_fed_img, percent)
+            central_img_above = central_img >= np.percentile(flat_central_img, percent)
+            
+            ax[1,1].imshow(original_img, cmap=plt.get_cmap("gray"), alpha=0.15, 
+                                              extent=(-1, fed_img_above.shape[1], fed_img_above.shape[0], -1))
+            ax[1][1].imshow(fed_img_above, cmap=red_transparent)
+            ax[1][1].axis('off')  
+            
+            ax[1,2].imshow(original_img, cmap=plt.get_cmap("gray"), alpha=0.15, 
+                                              extent=(-1, central_img_above.shape[1], central_img_above.shape[0], -1))
+            ax[1][2].imshow(central_img_above, cmap=red_transparent)
+            ax[1][2].axis('off') 
             
             cosine_metric = exp_metrics[i]['COSINE']
-            iou_metric = exp_metrics[i]['IoU']
+            pos_iou_metric, neg_iou_metric = exp_metrics[i]['IoU']
             mse_metric = exp_metrics[i]['MSE']
             ssim_metric = exp_metrics[i]['SSIM'] 
             
-            fig.suptitle(f'({exp_name})\n MSE: {mse_metric:.4f}  cos.distance: {cosine_metric:.4f}\nSSIM: {ssim_metric:.4f}  IoU: {iou_metric:.4f}')
+            fig.suptitle(f'({exp_name})\n MSE: {mse_metric:.4f}  cos.distance: {cosine_metric:.4f}\nSSIM: {ssim_metric:.4f}  IoU: {pos_iou_metric:.4f}, {neg_iou_metric:.4f}')
             fig.tight_layout()
-            fig.subplots_adjust(hspace=0.5)
+            #fig.subplots_adjust(hspace=0.5)
             
             output_path = os.path.join(output_dir, f'heatmap_compared_{i}.png')
             fig.savefig(output_path)
             plt.close(fig)
-    

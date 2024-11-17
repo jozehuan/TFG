@@ -1,6 +1,9 @@
 import numpy as np
 from functools import partial
 
+from pprint import pprint
+from sklearn.metrics import classification_report
+
 import torch
 from torch.utils.data import DataLoader
 from skimage.color import gray2rgb
@@ -10,7 +13,7 @@ import captum.attr as attr
 
 from flex.pool import predict_
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = 'cpu'
 
 from matplotlib.colors import LinearSegmentedColormap
 colors = []
@@ -92,6 +95,8 @@ class CENTRAL_System:
             test_acc = 0
             total_count = 0
             losses = []
+            all_preds = []
+            all_targets = []
             with torch.no_grad():
                 for data, target in test_dataloader:
                     total_count += target.size(0)
@@ -100,13 +105,22 @@ class CENTRAL_System:
                     output = self.model(data)
                     losses.append(self.criterion(output, target).item())
                     pred = output.data.max(1, keepdim=True)[1]
+                    
+                    all_preds.extend(pred.cpu().numpy())
+                    all_targets.extend(target.cpu().numpy())
+                    
                     test_acc += pred.eq(target.data.view_as(pred)).long().cpu().sum().item()
             
             test_loss = sum(losses) / len(losses)
             test_acc /= total_count
             
+            all_preds = np.array(all_preds).flatten()
+            all_targets = np.array(all_targets).flatten()
+            c_metrics = classification_report(all_targets, all_preds, output_dict=True, zero_division=0)
+            
             print(f"CENTRAL SYSTEM, round {i+1}: Test acc: {test_acc:.4f}, test loss: {test_loss:.4f}")
-    
+            if i is (n_rounds-1): pprint(c_metrics)
+            
     def explain(self, data = None):
         """ Get all the data explanations.
         
@@ -117,7 +131,10 @@ class CENTRAL_System:
             If None, explanations are generated for the test dataset.            
         """ 
         self.model.eval()
-        imgs = data.to_torchvision_dataset()
+        if data is not None:
+            imgs = data.to_torchvision_dataset()
+        else:
+            imgs = self.data_test
         
         for exp_name, exp_dict in self.explainers.items():
             explainer = exp_dict['explainer']
@@ -178,7 +195,7 @@ class CENTRAL_System:
                 
                 self.model.eval()
                 pred = self.model(data)
-                probs = pred[0].tolist()
+                probs = torch.softmax(pred, dim=1)[0].tolist()
                 prediction = torch.argmax(pred, dim=1).item()
                 
                 explanations = []

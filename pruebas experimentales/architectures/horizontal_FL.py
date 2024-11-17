@@ -1,5 +1,8 @@
 import numpy as np
+import time
 from collections import Counter, OrderedDict
+from pprint import pprint
+from sklearn.metrics import classification_report
 
 import torch
 from torchvision import datasets
@@ -26,7 +29,7 @@ from flex.pool import get_ShapExplanations
 from flex.pool import all_explanations, label_explanations, segment_explanations
 from flex.pool import to_centralized
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = 'cpu'
 
 from enum import Enum
 class archs(Enum):
@@ -50,7 +53,7 @@ def train(client_flex_model: FlexModel, client_data: Dataset):
     """
     
     train_dataset = client_data.to_torchvision_dataset()
-    cl_dataloader = DataLoader(train_dataset, batch_size=20)
+    cl_dataloader = DataLoader(train_dataset, batch_size=64)
     
     model = client_flex_model["model"]
     optimizer = client_flex_model["optimizer_func"](
@@ -66,8 +69,8 @@ def train(client_flex_model: FlexModel, client_data: Dataset):
             agg_weights_order[model_keys[i]] = tensor
         model.load_state_dict(agg_weights_order)
     
-    model = model.train()
     model = model.to(device)
+    model = model.train()
     criterion = client_flex_model["criterion"]
     
     for imgs, labels in cl_dataloader:
@@ -101,11 +104,11 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
     """
     
     model = server_flex_model["model"]
+    model = model.to(device)
     model.eval()
     test_loss = 0
     test_acc = 0
     total_count = 0
-    model = model.to(device)
     criterion = server_flex_model["criterion"]
     
     # get test data as a torchvision object
@@ -114,6 +117,8 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
                                  shuffle=True, pin_memory=False)
     
     losses = []
+    all_preds = []
+    all_targets = []
     with torch.no_grad():
         for data, target in test_dataloader:
             total_count += target.size(0)
@@ -122,11 +127,20 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
             output = model(data)
             losses.append(criterion(output, target).item())
             pred = output.data.max(1, keepdim=True)[1]
+            
+            all_preds.extend(pred.cpu().numpy())
+            all_targets.extend(target.cpu().numpy())
+            
             test_acc += pred.eq(target.data.view_as(pred)).long().cpu().sum().item()
 
     test_loss = sum(losses) / len(losses)
     test_acc /= total_count
-    return test_loss, test_acc
+    
+    all_preds = np.array(all_preds).flatten()
+    all_targets = np.array(all_targets).flatten()
+    c_metrics = classification_report(all_targets, all_preds, output_dict=True, zero_division=0)
+    
+    return test_loss, test_acc, c_metrics
 
 
 
@@ -135,7 +149,7 @@ class HFL_System:
     
     def __init__(self, name : str = 'modelname', dataset_root : str ='datasets', dataset : str = 'mnist', download : bool = True,
                  transform : callable = None, config_seed : int =0, replacement : bool = False, nodes : int = 2, 
-                 n_classes: int = 2, balance_nodes : bool = True, nodes_weights: list = None, balance_factor : float = 0.25,
+                 n_classes: int = 2, balance_nodes : bool = True, nodes_weights: list = None, balance_factor : float = 0.2,
                  server_weight : float = 0.2, balance_classes : bool = True, alpha_inf : float = 0.4, alpha_sup : float = 0.6):
         
         """ Initializes the HFL model.
@@ -173,7 +187,7 @@ class HFL_System:
             Weights of the nodes if provided. Default is None.
         balance_factor : float
             The factor used to balance the data distribution, must be in the range (0, 1).
-            Default is 0.25.
+            Default is 0.2.
         server_weight : float
             Weight of the server in the data distribution, must be in the range (0, 1).
             Default is 0.2.
@@ -300,17 +314,19 @@ class HFL_System:
             Identifier of the server (if applicable). Default is 0.
         """
         
-        if arch in archs.CS:
+        if arch in archs.CS.value:
+            self._arch = arch
             self._flex_pool = FlexPool.client_server_pool(
                  fed_dataset=self._fed_dataset, server_id=server_id, init_func=build)
             
-        elif arch in archs.P2P:
+        elif arch in archs.P2P.value:
+            self._arch = arch
             self._flex_pool = FlexPool.p2p_pool(fed_dataset=self._fed_dataset, init_func=build)
             
         else:
             raise ValueError(f"Invalid architecture type. Must be {archs.CS} or {archs.P2P}")
             
-    def train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = 2):
+    def train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = None, no_client_ids : int = None, data_to_explain = None):
         """ Main function for model training.
         
         Params
@@ -321,19 +337,29 @@ class HFL_System:
             Number of clients participating per round. Default is 2.
         """
         
+        result = []
         z_clients = self._flex_pool.clients
         z_servers = self._flex_pool.servers
         
-        if self._arch in archs.CS:
+        if self._arch in archs.CS.value:
             print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nClient-Server architecture ({len(z_servers)} server plus {len(z_clients)} clients) \nServer ID: {list(z_servers._actors.keys())}. The server is also an aggregator.\n")
-        elif self._arch in archs.P2P:
+        elif self._arch in archs.P2P.value:
             print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nPeer-to-Peer architecture")
         
+        # Choose clients to train
+        selected_clients = self._flex_pool.clients
+        if no_client_ids is not None:
+            selected_clients = self._flex_pool.clients.select(
+                criteria=lambda actor_id, _: actor_id not in no_client_ids)
+            print(f"All clients selected, except: {no_client_ids}")
+                
         for i in range(n_rounds):
             print(f"\nRunning round: {i+1} of {n_rounds}")
-            selected_clients_pool = self._flex_pool.clients.select(clients_per_round)
-            selected_clients = selected_clients_pool.clients
-            print(f"Selected clients for this round: {list(selected_clients._actors.keys())}")
+            
+            if (self._arch in archs.P2P.value) or (clients_per_round is not None):
+                selected_clients = self._flex_pool.clients.select(clients_per_round)
+                print(f"Selected clients for this round: {list(selected_clients._actors.keys())}")
+            
             # Deploy the server model to all the clients
             self._flex_pool.servers.map(deploy_server_model_pt, self._flex_pool.clients)
             # Each selected client trains her model
@@ -348,50 +374,107 @@ class HFL_System:
             # The aggregator send its aggregated weights to the server
             self._flex_pool.aggregators.map(set_aggregated_weights_pt, self._flex_pool.servers)
             metrics = self._flex_pool.servers.map(evaluate_global_model)
-            loss, acc = metrics[0]
+            loss, acc, c_metrics = metrics[0]
             print(f"Server: Test acc: {acc:.4f}, test loss: {loss:.4f}")
+            if i is (n_rounds-1): pprint(c_metrics)
             
+            if data_to_explain is not None:
+                result.append( (self.get_explanations(data_to_explain),
+                                self.label_explanations(data_to_explain),
+                                self.segments(data_to_explain) ) )
+        
+        self._flex_pool.servers.map(deploy_server_model_pt, self._flex_pool.clients)
+        return result  
     
-    def set_explainers(self):
-        """ Set predefinided explainers to the servers."""
+    def evaluate_node(self, node_id : int = None):
+        if node_id is None:
+            metrics = self._flex_pool.servers.map(evaluate_global_model)
+            return  metrics[0]
         
-        self._flex_pool.map(set_LimeImageExplainer, name='lime_slic', top_labels = 10, num_samples=2000, algo_type='slic', segment_params={'n_segments' : 200, 'compactness' : 0.05, 'sigma' : 0.4})
-        #self._flex_pool.servers.map(set_LimeImageExplainer, name='lime_quick', top_labels = 10, num_samples=2000, algo_type='quickshift', segment_params={'kernel_size' : 1, 'max_dist' : 2, 'ratio' : 0.2, 'sigma' : 0.05})
-        #self._flex_pool.servers.map(set_LimeImageExplainer, name='lime__felz', top_labels = 10, num_samples=2000, algo_type='felzenszwalb', segment_params={'scale' : 0.4, 'sigma' : 0.1, 'min_size' : 5})
+        else: 
+            selected_client = self._flex_pool.clients.select(
+                criteria=lambda actor_id, _: actor_id  in [node_id])
+            metrics = selected_client.map(evaluate_global_model)
+            return  metrics[0]
+    
+    def set_explainers(self, clients: bool = False):
+        """
+        Configura los explicadores predefinidos en los servidores y opcionalmente en los clientes.
         
-        self._flex_pool.map(set_DeepShapExplainer, name='deepshap')
-        self._flex_pool.map(set_GradientShapExplainer, name='gradshap', n_samples=1000, stdevs=0.5)
-        self._flex_pool.map(set_KernelShapExplainer, name='kernelshap', n_samples=1000, perturbations_per_eval=50)
+        Args:
+            clients (bool): Si es True, también asigna los explicadores a los clientes.
+        """
+        def configure_explainers(pool):
+            """Configura los explicadores en un conjunto de servidores o clientes."""
+            
+            lime_slic_params = {'name': 'lime_slic', 'top_labels': 10, 'num_samples': 2000, 
+                                'algo_type': 'slic', 'segment_params': {'n_segments': 150, 'compactness': 3, 'sigma': 0.4}} #{'n_segments': 200, 'compactness': 0.05, 'sigma': 0.4}}
+            lime_quickshift_params = {'name': 'lime_qs', 'top_labels': 10, 'num_samples': 2000, 
+                                'algo_type': 'quickshift', 'segment_params': {'kernel_size' : 1, 'max_dist' : 2, 'ratio' : 0.005} }
+            deepshap_params = {'name': 'deepshap'}
+            gradshap_params = {'name': 'gradshap', 'n_samples': 1000, 'stdevs': 0.5}
+            kernelshap_params = {'name': 'kernelshap', 'n_samples': 1000, 'perturbations_per_eval': 50}
+    
+            pool.map(set_LimeImageExplainer, **lime_slic_params)
+            
+            pool.map(set_LimeImageExplainer, **lime_quickshift_params)
+            
+            pool.map(set_DeepShapExplainer, **deepshap_params)
+            pool.map(set_GradientShapExplainer, **gradshap_params)
+            pool.map(set_KernelShapExplainer, **kernelshap_params)
+    
+        configure_explainers(self._flex_pool.servers)
+        if clients:
+            configure_explainers(self._flex_pool.clients)
         
-        
-    def get_explanations(self, data = None):
-        """ Get all the explanations of the servers. Also include SP-explanations.
+    def get_explanations(self, data=None, client_id: int = None, sub_pick: bool = False):
+        """
+        Obtiene todas las explicaciones generadas por los servidores o un cliente específico. 
+        Incluye las explicaciones SP (Shared Prediction).
         
         Params
         ----------
         data : flex.data.dataset.Dataset, optional
-            Data to be explained. Default None
-            If None, explanations are generated for the entire dataset.
+            Conjunto de datos a explicar. Si no se especifica, se utilizan todos los datos disponibles.
             
+        client_id : int, optional
+            ID del cliente específico para el cual se desean obtener las explicaciones. 
+            Si es None, se obtienen explicaciones de todos los servidores.
+        
         Returns
         ----------
         tuple
-            - dict: The explanations generated by the servers.
-            - str: The system's name.
-            
-        """ 
+            - dict: Las explicaciones generadas.
+            - str: Nombre del sistema.
+        """
         
-        self._flex_pool.servers.map(get_LimeExplanations, data=data)
-        self._flex_pool.servers.map(get_ShapExplanations, data=data)
+        def assign_explanations(pool, data, sub_pick):
+            """Asigna las funciones de explicación al conjunto de actores especificado."""
+            pool.map(get_LimeExplanations, data=data)
+            pool.map(get_ShapExplanations, data=data)
             
-        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'lime_slic')
-        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'deepshap')
-        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'gradshap')
-        self._flex_pool.servers.map(get_SP_LimeImageExplanation, data=data, explanation_name = 'kernelshap')
+            if sub_pick:
+                pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='lime_slic', num_exps_desired=1)
+            # pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='deepshap')
+            # pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='gradshap')
+            # pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='kernelshap')
         
-        return (self._flex_pool.servers.map(all_explanations, data=data)[0], self._name)
+        if client_id is None:
+            # Obtener explicaciones para todos los servidores
+            assign_explanations(self._flex_pool.servers, data, sub_pick)
+            explanations = self._flex_pool.servers.map(all_explanations, data=data)[0]
+        else:
+            # Seleccionar cliente específico y obtener sus explicaciones
+            client_pool = self._flex_pool.clients.select(
+                criteria=lambda actor_id, _: actor_id in [client_id]
+            )
+            assign_explanations(client_pool, data)
+            explanations = client_pool.map(all_explanations, data=data)[0]
+    
+        return explanations, self._name
+
             
-    def label_explanations(self, data = None):
+    def label_explanations(self, data = None, client_id: int = None):
         """ Get all the explanations of the servers, only for the label's image.
         
         Params
@@ -407,9 +490,15 @@ class HFL_System:
             - str: The system's name.
         """
         
-        return (self._flex_pool.servers.map(label_explanations, data=data)[0], self._name)
+        pool = self._flex_pool.servers
+        if client_id is not None:
+            pool = self._flex_pool.clients.select(
+                criteria=lambda actor_id, _: actor_id in [client_id]
+            )
+        
+        return (pool.map(label_explanations, data=data)[0], self._name)
     
-    def segments_lime(self, data= None):
+    def segments(self, data= None, client_id: int = None):
         """ Get segments images of the LIME explainers and KernelShap
         
         Params
@@ -425,7 +514,13 @@ class HFL_System:
             - str: The system's name.
         """ 
         
-        return (self._flex_pool.servers.map(segment_explanations, data=data)[0], self._name)
+        pool = self._flex_pool.servers
+        if client_id is not None:
+            pool = self._flex_pool.clients.select(
+                criteria=lambda actor_id, _: actor_id in [client_id]
+            )
+    
+        return (pool.map(segment_explanations, data=data)[0], self._name)
     
     def to_centalized(self):
         """ Get a centralized version of the federated dataset.

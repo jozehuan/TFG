@@ -111,7 +111,7 @@ def ERROR_MSG_MIN_ARG_GENERATOR(f, min_args):
 def get_SP_LimeImageExplanation(flex_model, node_data, *args, **kwargs):
     exp_output = {}
 
-    num_exps_desired = kwargs.get('num_exps_desired', 10)
+    num_exps_desired = kwargs.get('num_exps_desired', 3)
     if (e_name := kwargs.get('explanation_name', None)) is None: True # METER AQUI ERROR
 
     data = kwargs.get("data", None) 
@@ -120,50 +120,69 @@ def get_SP_LimeImageExplanation(flex_model, node_data, *args, **kwargs):
 
     explanations_all = flex_model['explanations'][e_name]
 
-    explanations = []
+    explanations = {}
     map_exp = {}
 
-    for d, exp in enumerate (explanations_all):
+    next(iter(dataset), None)
 
+    for d, exp in enumerate (explanations_all):
         data, label = dataset[exp._id_data]
-        _, prediction, _ = exp.get_pred_info(data.unsqueeze(0))
+        num_labels, prediction, _ = exp.get_pred_info(data.unsqueeze(0))
         
         if prediction == exp._label:
-            explanations.append(exp.get_explanation(data, label))
-            map_exp[len(explanations) - 1] = d
+            if label in explanations:
+                explanations[label].append(exp.get_explanation(data, label))
+            else:
+                explanations[label] = [exp.get_explanation(data, label)]
+                map_exp[label] = {}
+
+            map_exp[label][len(explanations[label]) - 1] = d
+
+    num_exps_per_class = [num_exps_desired] * num_labels
 
     try:
-        n_pixels = explanations[0].shape[0] * explanations[0].shape[1]
+        exps = next(iter(explanations.values()), None)
+        n_pixels = exps[0].shape[0] * exps[0].shape[1]
     except Exception:
-        warnings.warn("Advertencia: No se pudo calcular n_pixels. Terminando la función.")
+        warnings.warn("Warning: Unable to calculate the number of pixels. Ending the function.")
         return None
-        
-    num_exps_desired = min(num_exps_desired, len( explanations))
-
-    W = np.zeros((len(explanations), n_pixels))
-    for i, exp in enumerate(explanations):
-            for j, value in enumerate(exp.flatten()):
-                W[i, j] += value
     
-    importance = np.sum(abs(W), axis=0)**.5
+    exp_output[f'SP-{e_name}'] = []
+    
+    for l , exps in tqdm(explanations.items(), desc=f"Getting SP-{e_name} explanations: ", mininterval=2):
+        V = []
+        num_exps_desired = min(num_exps_desired, len(exps))
 
-    # Now run the SP-LIME greedy algorithm
-    remaining_indices = set(range(len(explanations)))
-    V = []
-    for _ in tqdm(range(num_exps_desired), desc=f"Getting SP-{e_name} explanations: ", mininterval=2):
-        best = 0
-        best_ind = None
-        current = 0
-        for i in remaining_indices:
-            current = np.dot(
-                    (np.sum(abs(W)[V + [i]], axis=0) > 0), importance
-                    )  # coverage function
-            if current >= best:
-                best = current
-                best_ind = i
-        V.append(best_ind)
-        remaining_indices -= {best_ind}
+        W = np.zeros((len(exps), n_pixels))
+        for i, exp in enumerate(exps):
+                for j, value in enumerate(exp.flatten()):
+                    W[i, j] += value
+                    
+        importance = np.sum(abs(W), axis=0)**.5
+        
+        # Now run the SP-LIME greedy algorithm
+        remaining_indices = set(range(len(exps)))
+        num_exps_desired = min(num_exps_desired * len(exps), len(exps))
 
-    sp_explanations = [explanations_all[map_exp[i]] for i in V] 
-    exp_output[f'SP-{e_name}'] = sp_explanations
+        for _ in range(num_exps_desired):
+            best = 0
+            best_ind = None
+            current = 0
+            for i in remaining_indices:
+                current = np.dot(
+                        (np.sum(abs(W)[V + [i]], axis=0) > 0), importance
+                        )  # coverage function
+                if current >= best:
+                    best = current
+                    best_ind = i
+
+            _, best_label  = dataset[explanations_all[map_exp[l][best_ind]]._id_data]
+            if num_exps_per_class[best_label] > 0: 
+                V.append(best_ind)
+                num_exps_per_class[best_label] -= 1
+
+            remaining_indices -= {best_ind}
+        
+        sp_explanations = [explanations_all[map_exp[l][i]] for i in V] 
+        exp_output[f'SP-{e_name}'] += sp_explanations
     return exp_output

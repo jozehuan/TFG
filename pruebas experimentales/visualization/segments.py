@@ -4,7 +4,7 @@ from tqdm import tqdm # progress bar
 
 import matplotlib.pyplot as plt
 
-def plot_segments(explainers, name):
+def plot_segments(explainers, name, n_round : int = None):
     for exp_name, segment_list in explainers.items():
         
         output_dir = f"images/{name}/{exp_name}/segments"
@@ -31,7 +31,11 @@ def plot_segments(explainers, name):
             ax[0,1].set_title(segment_img_str)
             
             fig.tight_layout()
-            output_path = os.path.join(output_dir, f'segmentation_{i}.png')
+            if n_round is None:
+                output_path = os.path.join(output_dir, f'segmentation_{i}.png')
+            else:
+                output_path = os.path.join(output_dir, f'segmentation_{i}__round_{n_round}.png')
+                
             fig.savefig(output_path)
             plt.close(fig)
 
