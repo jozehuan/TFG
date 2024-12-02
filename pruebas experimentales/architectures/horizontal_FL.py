@@ -1,7 +1,6 @@
 import numpy as np
-import time
+import copy
 from collections import Counter, OrderedDict
-from pprint import pprint
 from sklearn.metrics import classification_report
 
 import torch
@@ -11,7 +10,6 @@ from torch.utils.data import DataLoader
 import flex
 
 from flex.model import FlexModel
-
 from flex.data import Dataset
 
 from flex.pool import FlexPool
@@ -19,17 +17,16 @@ from flex.pool import deploy_server_model_pt
 from flex.pool import collect_clients_weights_pt, fed_avg
 from flex.pool import set_aggregated_weights_pt
 
-from flex.pool import set_LimeImageExplainer
-from flex.pool import get_LimeExplanations, get_SP_LimeImageExplanation
+from explainers import set_LimeImageExplainer
+from explainers import get_LimeExplanations, get_SP_LimeImageExplanation
 
-from flex.pool import set_DeepShapExplainer
-from flex.pool import set_GradientShapExplainer, set_KernelShapExplainer
-from flex.pool import get_ShapExplanations
+from explainers import set_DeepShapExplainer
+from explainers import set_GradientShapExplainer, set_KernelShapExplainer
+from explainers import get_ShapExplanations
 
-from flex.pool import all_explanations, label_explanations, segment_explanations
-from flex.pool import to_centralized
+from explainers import all_explanations, label_explanations, segment_explanations, get_global_mean
 
-device = 'cpu'
+from config import device
 
 from enum import Enum
 class archs(Enum):
@@ -82,7 +79,7 @@ def train(client_flex_model: FlexModel, client_data: Dataset):
         loss.backward()
         optimizer.step()
 
-def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
+def evaluate_global_model(flex_model: FlexModel, flex_data: Dataset, *args, **kwargs):
     """ Evaluates the global model using the provided test dataset.
 
     This function sets the model to evaluation mode, computes the loss and accuracy
@@ -90,7 +87,7 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
 
     Parameters
     ----------
-    server_flex_model : FlexModel
+    flex_model : FlexModel
         An instance of FlexModel containing the global model and the loss criterion.
     test_data : Dataset
         The dataset containing test samples to evaluate the model's performance.
@@ -103,35 +100,35 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
         The accuracy of the model on the test dataset, represented as a fraction between 0 and 1.
     """
     
-    model = server_flex_model["model"]
+    model = flex_model["model"]
     model = model.to(device)
     model.eval()
     test_loss = 0
     test_acc = 0
     total_count = 0
-    criterion = server_flex_model["criterion"]
+    criterion = flex_model["criterion"]
     
-    # get test data as a torchvision object
-    test_dataset = test_data.to_torchvision_dataset()
-    test_dataloader = DataLoader(test_dataset, batch_size=20, 
+    data_eval = kwargs.get('data_eval', flex_data.to_torchvision_dataset())
+    dataloader = DataLoader(data_eval, batch_size=20, 
                                  shuffle=True, pin_memory=False)
+    
     
     losses = []
     all_preds = []
     all_targets = []
-    with torch.no_grad():
-        for data, target in test_dataloader:
-            total_count += target.size(0)
-            data, target = data.to(device), target.to(device)
-            
-            output = model(data)
-            losses.append(criterion(output, target).item())
-            pred = output.data.max(1, keepdim=True)[1]
-            
-            all_preds.extend(pred.cpu().numpy())
-            all_targets.extend(target.cpu().numpy())
-            
-            test_acc += pred.eq(target.data.view_as(pred)).long().cpu().sum().item()
+    
+    for data, target in dataloader:
+        total_count += target.size(0)
+        data, target = data.to(device), target.to(device)
+        
+        output = model(data)
+        losses.append(criterion(output, target).item())
+        pred = output.data.max(1, keepdim=True)[1]
+        
+        all_preds.extend(pred.cpu().numpy())
+        all_targets.extend(target.cpu().numpy())
+        
+        test_acc += pred.eq(target.data.view_as(pred)).long().cpu().sum().item()
 
     test_loss = sum(losses) / len(losses)
     test_acc /= total_count
@@ -142,8 +139,33 @@ def evaluate_global_model(server_flex_model: FlexModel, test_data: Dataset):
     
     return test_loss, test_acc, c_metrics
 
+def to_centralized(flex_model: FlexModel, node_data: Dataset):
+    """ Obtain information from the federated system to design an equivalent centralized model.  
 
+    Parameters
+    ----------
+    flex_model : FlexModel
+        An instance of FlexModel containing the global model and the loss criterion.
+    test_data : Dataset
+        The dataset containing test samples to evaluate the model's performance.
 
+    Returns
+    -------
+    test_loss : float
+        The average loss over the test dataset.
+    test_acc : float
+        The accuracy of the model on the test dataset, represented as a fraction between 0 and 1.
+    """
+    try:
+        model = copy.deepcopy(flex_model["model"])
+        criterion = copy.deepcopy(flex_model["criterion"])
+        optimizer_func = copy.deepcopy(flex_model["optimizer_func"])
+        opt_kwargs = copy.deepcopy(flex_model["optimizer_kwargs"])
+        explainers = copy.deepcopy(flex_model["explainers"])
+    except:
+        model = criterion = optimizer_func = opt_kwargs = explainers = None
+
+    return model, criterion, optimizer_func, opt_kwargs, explainers, node_data
 
 class HFL_System:
     
@@ -202,73 +224,80 @@ class HFL_System:
         
         np.random.seed(config_seed)
         torch.manual_seed(config_seed)
+        self._config_seed = config_seed
         
         self._name = name
         self._arch = None
         
-        # Carga del dataset y transformación a objeto 'flex.data.Dataset'
+        # Load the dataset and transform to 'flex.data.Dataset' type
         if dataset.lower() == 'mnist':
             dt_train = datasets.MNIST(root=dataset_root, train=True, download=download, transform=transform)
             dt_test = datasets.MNIST(root=dataset_root, train=False, download=download, transform=transform)
-            dt_all = torch.utils.data.ConcatDataset([dt_train, dt_test])
-        if dataset.lower() == 'fashion_mnist':
+            dt_all = dt_train #torch.utils.data.ConcatDataset([dt_train, dt_test])
+        elif dataset.lower() == 'fashion_mnist':
             dt_train = datasets.FashionMNIST(root=dataset_root, train=True, download=download, transform=transform)
             dt_test = datasets.FashionMNIST(root=dataset_root, train=False, download=download, transform=transform)
             dt_all = torch.utils.data.ConcatDataset([dt_train, dt_test])
-        else: True
-            #Retornar error
+        else:
+            raise ValueError(f"Unsupported dataset: {dataset}. Please choose either 'mnist' or 'fashion_mnist'.")
             
         self._dataset = flex.data.Dataset.from_torchvision_dataset(dt_all)
         self._dataset_lenght = len(self._dataset)
         
-        # Definición de la configuración de la partición del conjunto de datos
-        self._config = flex.data.FedDatasetConfig(seed = config_seed)
+        self._data_test, self._data_val = torch.utils.data.random_split(dt_test, 
+                                                                        [0.75, 0.25], 
+                                                                        generator=torch.Generator().manual_seed(config_seed))
         
-            # Si los propietarios poseen instancias comunes o no
+        
+        # Definition of the federated system configuration
+        self._config = flex.data.FedDatasetConfig(seed=config_seed)
+        
+            # Whether the owners have common instances or not
         self._config.replacement = replacement
-            # Número de propietarios. Como no se proporcionan id propios para cada
-            # nodo, los id se definirán como enteros desde el 0 hacia adelante
+            # Number of owners. Since no unique ids are provided for each node,
+            # ids will be defined as integers starting from 0 onwards
         self._config.n_nodes = nodes
-            # Número de clases
+            # Number of classes
         self._num_classes = n_classes
         
         
-        # Si se quiere que los nodos no estén balanceados, hay que configurar la distribución
+        # If we don't want the nodes to be balanced, the distribution should be configured
         if not balance_nodes:
-            # En el caso que se proporcione una distribución para cada propietario
+            # If a distribution for each owner is provided
             if nodes_weights is not None and isinstance(nodes_weights, list) and len(nodes_weights) == self._config.n_nodes:
-                   self._nodes_weights = nodes_weights / np.sum(nodes_weights, axis=0)
-                   
+                self._nodes_weights = nodes_weights / np.sum(nodes_weights, axis=0)
+                
             else:
-                # Se determina una distribución aleatoria para cada nodo
-                if(balance_factor < 1):
+                # A random distribution is determined for each node
+                if balance_factor < 1:
                     half_range = self._dataset_lenght * balance_factor / self._config.n_nodes
-                    self._nodes_weights =  np.random.uniform(max(0, self._dataset_lenght / self._config.n_nodes - half_range), 
+                    self._nodes_weights = np.random.uniform(max(0, self._dataset_lenght / self._config.n_nodes - half_range), 
                                                              min(self._dataset_lenght, self._dataset_lenght / self._config.n_nodes + half_range), 
                                                              self._config.n_nodes - 1)
-            
-                    self._nodes_weights = self._nodes_weights / np.sum(self._nodes_weights, axis=0) * (1-server_weight)
+        
+                    self._nodes_weights = self._nodes_weights / np.sum(self._nodes_weights, axis=0) * (1 - server_weight)
                     self._nodes_weights = np.insert(self._nodes_weights, 0, server_weight)
                     self._nodes_weights = self._nodes_weights / np.sum(self._nodes_weights, axis=0)
                     
-            # Se añade dicha distribución a la configuración
+            # Add this distribution to the configuration
             nodes_w_tiping: np.typing.NDArray = self._nodes_weights
             self._config.weights = nodes_w_tiping
-    
         
-        # Si se quiere que, en cada nodo, se distribuya cada clase de manera desbalanceada
+        
+        # If we want each node to distribute classes in an unbalanced manner
         if not balance_classes:
-            # Se define la matriz de distribución, para cada nodo y cada clase
+            # Define the distribution matrix for each node and each class
             self._alphas = np.random.uniform(alpha_inf, alpha_sup, [self.config.n_nodes, self._num_classes])
             self._alphas = self._alphas / np.sum(self._alphas, axis=0)
             self._alphas = self._alphas
-            
-            # Se añade la distribución a la configuración
+        
+            # Add the distribution to the configuration
             self._config.weights_per_class = self._alphas
-           
-            
-        # Se establece la distribución de los datos en cada nodo
+        
+        
+        # Set the data distribution on each node
         self._fed_dataset = flex.data.FedDataDistribution.from_config(self._dataset, self._config)
+
         
     
     def class_counter(self, node_id : int = None):    
@@ -294,13 +323,11 @@ class HFL_System:
         """
         
         nodes = range(self._config.n_nodes) if node_id is None else [node_id]
-        
         res = [(k, dict(sorted((c := Counter(self._fed_dataset[k].to_list()[1])).items())),
                 sum(c.values())) for k in nodes]
-            
         return res
     
-    def set_model(self,  build : callable, arch : str = 'cs', server_id: int = 0):  
+    def set_model(self,  build : callable, arch : str = 'cs', server_id: int = 0, **kwargs):  
         """ Sets up the horizontal federated model.
         
         Params
@@ -317,16 +344,16 @@ class HFL_System:
         if arch in archs.CS.value:
             self._arch = arch
             self._flex_pool = FlexPool.client_server_pool(
-                 fed_dataset=self._fed_dataset, server_id=server_id, init_func=build)
+                 fed_dataset=self._fed_dataset, server_id=server_id, init_func=build, **kwargs)
             
         elif arch in archs.P2P.value:
             self._arch = arch
-            self._flex_pool = FlexPool.p2p_pool(fed_dataset=self._fed_dataset, init_func=build)
+            self._flex_pool = FlexPool.p2p_pool(fed_dataset=self._fed_dataset, init_func=build, **kwargs)
             
         else:
             raise ValueError(f"Invalid architecture type. Must be {archs.CS} or {archs.P2P}")
             
-    def train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = None, no_client_ids : int = None, data_to_explain = None):
+    def cs_train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = None, no_client_ids : int = None, data_to_explain = None):
         """ Main function for model training.
         
         Params
@@ -338,13 +365,6 @@ class HFL_System:
         """
         
         result = []
-        z_clients = self._flex_pool.clients
-        z_servers = self._flex_pool.servers
-        
-        if self._arch in archs.CS.value:
-            print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nClient-Server architecture ({len(z_servers)} server plus {len(z_clients)} clients) \nServer ID: {list(z_servers._actors.keys())}. The server is also an aggregator.\n")
-        elif self._arch in archs.P2P.value:
-            print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nPeer-to-Peer architecture")
         
         # Choose clients to train
         selected_clients = self._flex_pool.clients
@@ -356,7 +376,7 @@ class HFL_System:
         for i in range(n_rounds):
             print(f"\nRunning round: {i+1} of {n_rounds}")
             
-            if (self._arch in archs.P2P.value) or (clients_per_round is not None):
+            if clients_per_round is not None:
                 selected_clients = self._flex_pool.clients.select(clients_per_round)
                 print(f"Selected clients for this round: {list(selected_clients._actors.keys())}")
             
@@ -368,23 +388,102 @@ class HFL_System:
             self._flex_pool.aggregators.map(collect_clients_weights_pt, selected_clients)
             self._flex_pool.aggregators.map(fed_avg)
             
-            # Llegar a algún elemento del modelo general
-            # w_cl2 = self._flex_pool.aggregators._models[0]['aggregated_weights']
-            
             # The aggregator send its aggregated weights to the server
             self._flex_pool.aggregators.map(set_aggregated_weights_pt, self._flex_pool.servers)
-            metrics = self._flex_pool.servers.map(evaluate_global_model)
+            metrics = self._flex_pool.servers.map(evaluate_global_model, data_eval=self._data_val, seed = self._config_seed)
             loss, acc, c_metrics = metrics[0]
-            print(f"Server: Test acc: {acc:.4f}, test loss: {loss:.4f}")
-            if i is (n_rounds-1): pprint(c_metrics)
+            print(f"Server (VALIDATION): acc: {acc:.4f}, loss: {loss:.4f}")
+            #if i is (n_rounds-1): pprint(c_metrics)
             
             if data_to_explain is not None:
                 result.append( (self.get_explanations(data_to_explain),
                                 self.label_explanations(data_to_explain),
                                 self.segments(data_to_explain) ) )
         
+        metrics = self._flex_pool.servers.map(evaluate_global_model, data_eval=self._data_test, seed = self._config_seed)
+        loss, acc, c_metrics = metrics[0]
+        print(f"Server (TEST): acc: {acc:.4f}, loss: {loss:.4f}")
+        #pprint(c_metrics)
+        
         self._flex_pool.servers.map(deploy_server_model_pt, self._flex_pool.clients)
         return result  
+    
+    def p2p_train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = None, no_client_ids : int = None, data_to_explain = None):
+        """ Main function for model training.
+        
+        Params
+        ----------
+        n_rounds : int, optional
+            Number of training rounds. Default is 10.
+        clients_per_round : int, optional
+            Number of clients participating per round. Default is 2.
+        """
+        
+        result = []
+        
+        # Choose clients to train
+        selected_clients = self._flex_pool.clients
+        
+        selected_client_to_eval = self._flex_pool.clients.select(
+            criteria=lambda actor_id, _: actor_id in [0])
+
+        for i in range(n_rounds):
+            print(f"\nRunning round: {i+1} of {n_rounds}")
+            
+            if clients_per_round is not None:
+                selected_clients = self._flex_pool.clients.select(clients_per_round)
+                print(f"Selected clients for this round: {list(selected_clients._actors.keys())}")
+            
+            # Each selected client trains her model
+            selected_clients.map(train)
+            
+            # All the clients (also aggregators) collects weights from the selected clients and aggregates them
+            self._flex_pool.aggregators.map(collect_clients_weights_pt, selected_clients)
+            self._flex_pool.aggregators.map(fed_avg)
+            
+            # Each client set its aggregated weights to its model
+            for i in self._flex_pool.aggregators.actor_ids:
+                selected_aggr = self._flex_pool.aggregators.select(
+                    criteria=lambda actor_id, _: actor_id in [i])
+            
+                selected_aggr.map(set_aggregated_weights_pt, selected_aggr)
+            
+            metrics = selected_client_to_eval.map(evaluate_global_model, validation=True, seed = self._config_seed)
+            loss, acc, c_metrics = metrics[0]
+            print(f"Client 0 (VALIDATION): acc: {acc:.4f}, loss: {loss:.4f}")
+            #if i is (n_rounds-1): pprint(c_metrics)
+        
+        metrics = selected_client_to_eval.map(evaluate_global_model, validation=False, seed = self._config_seed)
+        loss, acc, c_metrics = metrics[0]
+        print(f"Client 0 (TEST): acc: {acc:.4f}, loss: {loss:.4f}")
+        #pprint(c_metrics)
+        
+        self._flex_pool.servers.map(deploy_server_model_pt, self._flex_pool.clients)
+        return result  
+    
+    def train_n_rounds(self, n_rounds: int = 10, clients_per_round : int = None, no_client_ids : int = None, data_to_explain = None):
+        """ Main function for model training.
+        
+        Params
+        ----------
+        n_rounds : int, optional
+            Number of training rounds. Default is 10.
+        clients_per_round : int, optional
+            Number of clients participating per round. Default is 2.
+        """
+        
+        z_clients = self._flex_pool.clients
+        z_servers = self._flex_pool.servers
+        
+        if self._arch in archs.CS.value:
+            print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nClient-Server architecture ({len(z_servers)} server plus {len(z_clients)} clients) \nServer ID: {list(z_servers._actors.keys())}. The server is also an aggregator.\n")
+            return self.cs_train_n_rounds(n_rounds, clients_per_round, no_client_ids, data_to_explain)    
+        elif self._arch in archs.P2P.value:
+            print(f"\nNumber of nodes in the pool: {len(self._flex_pool)}\nPeer-to-Peer architecture")
+            return self.p2p_train_n_rounds(n_rounds, clients_per_round, no_client_ids, data_to_explain)
+        else: 
+            return None
+        
     
     def evaluate_node(self, node_id : int = None):
         if node_id is None:
@@ -408,7 +507,7 @@ class HFL_System:
             """Configura los explicadores en un conjunto de servidores o clientes."""
             
             lime_slic_params = {'name': 'lime_slic', 'top_labels': 10, 'num_samples': 2000, 
-                                'algo_type': 'slic', 'segment_params': {'n_segments': 150, 'compactness': 3, 'sigma': 0.4}} #{'n_segments': 200, 'compactness': 0.05, 'sigma': 0.4}}
+                                'algo_type': 'slic', 'segment_params': {'n_segments': 100, 'compactness': 3, 'sigma': 0.4}} #{'n_segments': 200, 'compactness': 0.05, 'sigma': 0.4}}
             lime_quickshift_params = {'name': 'lime_qs', 'top_labels': 10, 'num_samples': 2000, 
                                 'algo_type': 'quickshift', 'segment_params': {'kernel_size' : 1, 'max_dist' : 2, 'ratio' : 0.005} }
             deepshap_params = {'name': 'deepshap'}
@@ -454,21 +553,19 @@ class HFL_System:
             pool.map(get_ShapExplanations, data=data)
             
             if sub_pick:
-                pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='lime_slic', num_exps_desired=1)
-            # pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='deepshap')
-            # pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='gradshap')
-            # pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='kernelshap')
+                pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='lime_slic', num_exps_desired=5)
+                pool.map(get_SP_LimeImageExplanation, data=data, explanation_name='lime_qs', num_exps_desired=5)
         
         if client_id is None:
-            # Obtener explicaciones para todos los servidores
+            # Get explanatios for the servers
             assign_explanations(self._flex_pool.servers, data, sub_pick)
             explanations = self._flex_pool.servers.map(all_explanations, data=data)[0]
         else:
-            # Seleccionar cliente específico y obtener sus explicaciones
+            # Select clients
             client_pool = self._flex_pool.clients.select(
                 criteria=lambda actor_id, _: actor_id in [client_id]
             )
-            assign_explanations(client_pool, data)
+            assign_explanations(client_pool, data, sub_pick)
             explanations = client_pool.map(all_explanations, data=data)[0]
     
         return explanations, self._name
@@ -522,11 +619,8 @@ class HFL_System:
     
         return (pool.map(segment_explanations, data=data)[0], self._name)
     
-    def to_centalized(self):
+    def to_centralized(self):
         """ Get a centralized version of the federated dataset.
-        
-        The clients' data constitutes the train dataset.
-        The servers' data constitutes the test dataset.
         
         Returns
         ----------
@@ -541,14 +635,40 @@ class HFL_System:
         """ 
         
         server_info = self._flex_pool.servers.map(to_centralized)
-        model, criterion, optimizer_func, opt_kwargs, explainers, server_data = server_info[0]
-        test_data = server_data.to_torchvision_dataset()
-        
         client_info = self._flex_pool.clients.map(to_centralized)
+        
+        test_data, val_data = self._data_test, self._data_val
+        
+        model, criterion, optimizer_func, opt_kwargs, explainers, server_data = server_info[0]
+        
         train_data = []
+        train_data.append(server_data.to_torchvision_dataset())
+        
         for cl_info in client_info:
             _, _, _, _, _, client_data = cl_info
             client_data = client_data.to_torchvision_dataset()
             train_data.append(client_data)
         
-        return model, criterion, optimizer_func, opt_kwargs, explainers, train_data, test_data
+        return model, criterion, optimizer_func, opt_kwargs, explainers, train_data, test_data, val_data
+    
+    def global_mean(self, data = None, client_id: int = None):
+        """ Get SHAP global means
+        
+        Params
+        ----------
+        data : flex.data.Dataset, optional
+            explained data
+        
+        Returns
+        ----------
+        tuple
+            - A dict with global means for each explainer 
+            - name of the system
+        """ 
+        pool = self._flex_pool.servers
+        if client_id is not None:
+            pool = self._flex_pool.clients.select(
+                criteria=lambda actor_id, _: actor_id in [client_id]
+            )
+
+        return (pool.map(get_global_mean, data=data)[0], self._name)

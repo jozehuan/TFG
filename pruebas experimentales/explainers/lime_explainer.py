@@ -1,35 +1,47 @@
 import numpy as np
 import warnings
 
-from flex.pool.decorators import set_explainer, get_explanations
+from flex.pool.decorators import set_explainer, compute_explanations
 
 from lime import lime_image
 from lime.wrappers.scikit_image import SegmentationAlgorithm 
 
-from tqdm import tqdm # barra de progreso
+from tqdm import tqdm 
 
-from flex.pool.explanation import Explanation
+from .explanation import Lime_explanation
 
-from skimage.color import gray2rgb, rgb2gray
 
 LIME_SEGMENTATION_ALGORITHMS = ['quickshift', 'slic', 'felzenszwalb']
 
 def ERROR_MSG_SEG_ALG_NOT_FOUND_GENERATOR(a):
     return f"Unknown {a} segmentation algorithm. Valid options are: {LIME_SEGMENTATION_ALGORITHMS}"
 
+def ERROR_MSG_MIN_ARG_GENERATOR(f, min_args):
+    return f"The decorated function: {f.__name__} is expected to have at least {min_args} argument/s."
+
 @set_explainer
 def set_LimeImageExplainer(flex_model, *args, **kwargs):
-    '''Define the LimeImageExplainer in the nodes, using the decorator @set_explainer
+    '''Define the LimeImageExplainer method, using the decorator @set_explainer
 
      Args:
     -----
-        flex_model (FlexModel): object storing information needed to run a Pytorch model
+        flex_model : flex.model.FlexModel
+            The node's FlexModel instance
 
-        kernel_width (float, optional): kernel width for the exponential kernel
-        kernel (Callable, optional): similarity kernel that takes euclidean distances and kernel width as input and outputs weights in (0,1). If None, defaults to an exponential kernel
-        feature_selection (str, optional): feature selection method. can be 'forward_selection', 'lasso_path', 'none' or 'auto'
-        random_state (int, optional): value used to generate random numbers. If None, the random state will be initialized using the internal numpy seed.
-
+        **kwargs : 
+            Optional keyword arguments for configuring the LimeImageExplainer:
+            
+            - kernel_width : float, optional
+                    Kernel width for the exponential kernel.
+            - kernel : Callable, optional 
+                    Similarity kernel that takes Euclidean distances and kernel width 
+                    as input and outputs weights in (0,1). Default: exponential kernel.
+            - feature_selection : str, optional
+                    Feature selection method. Can be 'forward_selection', 'lasso_path', 
+                    'none', or 'auto'.
+            - random_state : int, optional
+                    Value used to generate random numbers. If None, the random state 
+                    will be initialized using the internal numpy seed.
     '''
 
     k_w = kwargs.get("kernel_width", 0.25)
@@ -67,16 +79,19 @@ def set_LimeImageExplainer(flex_model, *args, **kwargs):
             explain_instance_kwargs['segmentation_fn'] = segmenter
     
     dict_result['explain_instance_kwargs'] = explain_instance_kwargs
-    return dict_result  # OUTPUT: {explainer : explainer , explain_instance_kwargs : {**kwargs}}
+    return dict_result  
 
-@get_explanations
+@compute_explanations
 def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
-    '''Generate explanations for the specified data, according to the explainers defined by the specified model, using the decorator @get_explanations
+    '''Generate explanations for the specified data, according to the explainers defined 
+    by the specified model, using the decorator @get_explanations
 
      Args:
     -----
-        flex_model (FlexModel): object storing information needed to run a Pytorch model
-        data (flex.data.Dataset): objet storing the specified data to be explained
+        flex_model : flex.model.FlexModel
+            The node's FlexModel instance
+        data : flex.data.Dataset
+            Node data
 
     Note:
     -----
@@ -95,7 +110,7 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
             explanations = []
             for i in tqdm(range(len(dataset)), desc="Getting LIME explanations: ", mininterval=2): 
                 data, label = dataset[i]
-                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, **exp['explain_instance_kwargs'])
+                explanation = Lime_explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, **exp['explain_instance_kwargs'])
                 
                 explanations.append(explanation)
             exp_output[exp_name] = explanations
@@ -103,12 +118,21 @@ def get_LimeExplanations(flex_model, node_data, *args, **kwargs):
     return exp_output
 
 
-def ERROR_MSG_MIN_ARG_GENERATOR(f, min_args):
-    return f"The decorated function: {f.__name__} is expected to have at least {min_args} argument/s."
-
-
-@get_explanations
+@compute_explanations
 def get_SP_LimeImageExplanation(flex_model, node_data, *args, **kwargs):
+    '''Generate explanations using the SP-LIME algorithm , using the decorator @get_explanations
+
+     Args:
+    -----
+        flex_model : flex.model.FlexModel
+            The node's FlexModel instance
+        data : flex.data.Dataset
+            Node data
+
+    Note:
+    -----
+        The argument 'data' should be provided through *args or **kwargs when calling the function.
+    '''
     exp_output = {}
 
     num_exps_desired = kwargs.get('num_exps_desired', 3)

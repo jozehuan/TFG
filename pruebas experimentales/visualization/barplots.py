@@ -4,6 +4,18 @@ import os
 import matplotlib.pyplot as plt
 
 def barplot(class_counter, name, ncols : int = 4):
+    """ Generates and saves barpolts for the data distribution on the federal system.
+
+    Parameters
+    ----------
+    class_counter: list
+        A list of tuples, where each tuple contains the node ID, the count of samples 
+        for each class, and the total number of samples in the node.
+    name : str
+        The name of the system.
+    ncols : int, optional
+        Number of colums of the image. Default: 4
+    """
     output_dir = f'images/{name}'
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -23,7 +35,7 @@ def barplot(class_counter, name, ncols : int = 4):
         axs[k].set_xlabel('classes', fontsize=16)
         if k%ncols == 0:
             axs[k].set_ylabel('count', fontsize=16)
-        axs[k].set_title(f'node {k} (total {total})', fontsize=16)
+        axs[k].set_title(f'node {k} (total {total})', fontsize=20)
         
         v_max = max(dict_counter.values())
         v_min = min(dict_counter.values())

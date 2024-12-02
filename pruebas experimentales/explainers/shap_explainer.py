@@ -1,17 +1,26 @@
-from flex.pool.decorators import set_explainer, get_explanations
-from flex.pool.explanation import Explanation
+from tqdm import tqdm 
+from skimage.segmentation import slic
 
 from captum.attr import DeepLiftShap, GradientShap, KernelShap
-
-from tqdm import tqdm # progress bar
-
-from skimage.segmentation import slic
 
 import torch
 from torch.utils.data import DataLoader
 
+from flex.pool.decorators import set_explainer, compute_explanations
+from .explanation import Shap_explanation
+
 
 def set_ShapExplainer(flex_model, explainer, *args, **kwargs):
+    '''Base function to define SHAP explainers
+    
+     Args:
+    -----
+        flex_model :  flex.model.FlexModel
+            The node's FlexModel
+        explainer : Union[DeepLiftShap, GradientShap, KernelShap]
+            The Captum explanation method to be used as an explainer.
+    '''
+    
     dict_result = {'explainer' : explainer} 
     explain_instance_kwargs = {} 
 
@@ -31,8 +40,8 @@ def set_DeepShapExplainer(flex_model, *args, **kwargs):
 
      Args:
     -----
-        baselines (float, optional): 
-        return_convergence_delta (bool, optional): 
+        flex_model :  flex.model.FlexModel
+            The node's FlexModel
     '''
 
     explainer = DeepLiftShap(flex_model["model"])
@@ -44,8 +53,8 @@ def set_GradientShapExplainer(flex_model, *args, **kwargs):
 
      Args:
     -----
-        baselines (float, optional): 
-        return_convergence_delta (bool, optional): 
+        flex_model :  flex.model.FlexModel
+            The node's FlexModel 
     '''
 
     explainer = GradientShap(flex_model["model"])
@@ -57,27 +66,31 @@ def set_KernelShapExplainer(flex_model, *args, **kwargs):
 
      Args:
     -----
-        baselines (float, optional): 
-        return_convergence_delta (bool, optional): 
+        flex_model :  flex.model.FlexModel
+            The node's FlexModel
     '''
 
     explainer = KernelShap(flex_model["model"])
     return set_ShapExplainer(flex_model, explainer, *args, **kwargs)
 
-@get_explanations
+@compute_explanations
 def get_ShapExplanations(flex_model, node_data, *args, **kwargs):
-    '''Generate explanations for the specified data, according to the explainers defined by the specified model, using the decorator @get_explanations
+    '''Generate explanations for the specified data, according to the explainers defined by
+    the specified model, using the decorator @get_explanations
 
      Args:
     -----
-        flex_model (FlexModel): The node's FlexModel
-        node_data (flex.data.Dataset): The node's dataset
-        data (flex.data.Dataset, optional): objet storing the specified data to be explained
+        flex_model :  flex.model.FlexModel
+            The node's FlexModel
+        node_data : flex.data.Dataset
+            The node's dataset
+        data : flex.data.Dataset, optional
+            store the specified data to be explained
 
     Note:
     -----
         The argument 'data' should be provided through **kwargs when calling the function.
-        If not provided, the entire dataset will be explained.
+        If not provided, the node's data will be explained.
     '''
     exp_output = {}
 
@@ -97,9 +110,9 @@ def get_ShapExplanations(flex_model, node_data, *args, **kwargs):
             for i in tqdm(range(len(dataset)), desc=f'Getting {cl_name} explanations: ', mininterval=2): 
                 data, label = dataset[i]
                 if "baselines" in exp['explain_instance_kwargs']:
-                    explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, **exp['explain_instance_kwargs'])
+                    explanation = Shap_explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, **exp['explain_instance_kwargs'])
                 else:
-                    explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, baselines = baseline, **exp['explain_instance_kwargs'])
+                    explanation = Shap_explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, baselines = baseline, **exp['explain_instance_kwargs'])
                 
                 explanations.append(explanation)
             exp_output[exp_name] = explanations
@@ -109,10 +122,10 @@ def get_ShapExplanations(flex_model, node_data, *args, **kwargs):
             for i in tqdm(range(len(dataset)), desc=f'Getting {cl_name} explanations: ', mininterval=2): 
                 data, label = dataset[i]
                 
-                segm = slic(data.clone().detach().squeeze(0).detach().numpy() , n_segments=200, compactness=0.05, sigma=0.4, channel_axis=None)
+                segm = slic(data.clone().detach().squeeze(0).detach().numpy() , n_segments=100, compactness=0.05, sigma=0.4, channel_axis=None)
                 segm_ = torch.tensor(segm).unsqueeze(0).unsqueeze(0) - 1
                 base = torch.zeros_like(data.clone().detach().unsqueeze(0))
-                explanation = Explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, baselines=base, feature_mask=segm_, **exp['explain_instance_kwargs'])
+                explanation = Shap_explanation(model = flex_model['model'], exp = exp['explainer'], id_data = i, label = label, baselines=base, feature_mask=segm_, **exp['explain_instance_kwargs'])
                 
                 explanations.append(explanation)
             exp_output[exp_name] = explanations

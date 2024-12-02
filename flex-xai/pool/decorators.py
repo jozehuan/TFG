@@ -17,7 +17,6 @@ Copyright (C) 2024  Instituto Andaluz Interuniversitario en Ciencia de Datos e I
 import functools
 from typing import List
 import warnings
-import copy
 
 from flex.common.utils import check_min_arguments
 from flex.model import FlexModel
@@ -159,14 +158,14 @@ def set_explainer(func):
     return _set_explainer_
 
 
-def get_explanations(func):
+def compute_explanations(func):
     min_args = 1
     assert check_min_arguments(func, min_args), ERROR_MSG_MIN_ARG_GENERATOR(
         func, min_args
     )
 
     @functools.wraps(func)
-    def _get_explanations_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
+    def _compute_explanations_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
         if "explanations" not in node_flex_model:
             node_flex_model["explanations"] = {}
         
@@ -174,29 +173,12 @@ def get_explanations(func):
         if explanations is not None:
             node_flex_model["explanations"].update(explanations)
 
-    return _get_explanations_
+    return _compute_explanations_
 
-def centralized(func):
+
+def get_explanations(func):
     @functools.wraps(func)
-    def _centralized_(servers_flex_model: FlexModel, server_data: Dataset):
-        try:
-            model = copy.deepcopy(servers_flex_model["model"])
-            criterion = copy.deepcopy(servers_flex_model["criterion"])
-            optimizer_func = copy.deepcopy(servers_flex_model["optimizer_func"])
-            opt_kwargs = copy.deepcopy(servers_flex_model["optimizer_kwargs"])
-            explainers = copy.deepcopy(servers_flex_model["explainers"])
-        except:
-            model = criterion = optimizer_func = opt_kwargs = explainers = None
-
-        
-        return model, criterion, optimizer_func, opt_kwargs, explainers, server_data
-
-    return _centralized_
-
-
-def to_plot_explanation(func):
-    @functools.wraps(func)
-    def _to_plot_explanation_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
+    def _get_explanation_(node_flex_model: FlexModel, node_data: Dataset, *args, **kwargs):
         dict_result = {} 
         for exp_name, exps in node_flex_model["explanations"].items():
             if (result := func(exps, node_data, name=exp_name, *args, **kwargs)) is not None:
@@ -204,4 +186,4 @@ def to_plot_explanation(func):
         
         return dict_result
 
-    return _to_plot_explanation_
+    return _get_explanation_

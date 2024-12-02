@@ -92,7 +92,7 @@ def plot_heatmaps(explainers, name, n_round : int = None):
             fig.savefig(output_path)
             plt.close(fig)
 
-def plot_heatmaps_compared(fed_exps, central_exps, metrics):
+def plot_heatmaps_compared(fed_exps, central_exps, metrics, aditional_path: str = None):
     """ Generates and saves compared heatmaps for federated and central explanations.
     
     This function compares heatmaps generated from federated and central models
@@ -121,6 +121,8 @@ def plot_heatmaps_compared(fed_exps, central_exps, metrics):
         exp_metrics = metrics[exp_name]
         
         output_dir = f"images/{name}/{exp_name}/heatmaps_compared"
+        if aditional_path is not None:
+            output_dir += aditional_path
         try:
             os.makedirs(output_dir, exist_ok=True)
         except Exception as e:
@@ -179,11 +181,12 @@ def plot_heatmaps_compared(fed_exps, central_exps, metrics):
             ax[1][2].axis('off') 
             
             cosine_metric = exp_metrics[i]['COSINE']
-            pos_iou_metric, neg_iou_metric = exp_metrics[i]['IoU']
-            mse_metric = exp_metrics[i]['MSE']
+            pos_iou_metric = exp_metrics[i]['IoU']
+            pcc_metric = exp_metrics[i]['PCC']
             ssim_metric = exp_metrics[i]['SSIM'] 
+            srcc_metric = exp_metrics[i]['SRCC'] 
             
-            fig.suptitle(f'({exp_name})\n MSE: {mse_metric:.4f}  cos.distance: {cosine_metric:.4f}\nSSIM: {ssim_metric:.4f}  IoU: {pos_iou_metric:.4f}, {neg_iou_metric:.4f}')
+            fig.suptitle(f'({exp_name})\n PCC: {pcc_metric:.4f}  cos.distance: {cosine_metric:.4f}\nSSIM: {ssim_metric:.4f}  IoU: {pos_iou_metric:.4f}  SRCC: {srcc_metric:.4f}')
             fig.tight_layout()
             #fig.subplots_adjust(hspace=0.5)
             

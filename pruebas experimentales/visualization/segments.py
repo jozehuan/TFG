@@ -5,6 +5,20 @@ from tqdm import tqdm # progress bar
 import matplotlib.pyplot as plt
 
 def plot_segments(explainers, name, n_round : int = None):
+    """ Generates and saves images of the segmentatios produced by the specified explainers.
+
+    This function iterates through the explanatios of each explainer, generating images for 
+    each explanation and saving them as PNG files in a designated directory.
+
+    Parameters
+    ----------
+    explainers : dict
+        A dictionary where keys are names of explainers and values are lists of explanation tuples.
+        
+    name : str
+        The name of the system.
+    """
+    
     for exp_name, segment_list in explainers.items():
         
         output_dir = f"images/{name}/{exp_name}/segments"
